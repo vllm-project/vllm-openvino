@@ -7,7 +7,8 @@ import torch
 import vllm.envs as envs
 from vllm.logger import init_logger
 
-from .interface import Platform, PlatformEnum, _Backend
+from vllm.platforms.interface import Platform, PlatformEnum, _Backend
+
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
