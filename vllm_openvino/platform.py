@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-import vllm.envs as envs
+#import vllm.envs as envs
+import vllm_openvino.envs as envs # not sure if this is a optimal solution!
 from vllm.logger import init_logger
 
 from vllm.platforms.interface import Platform, PlatformEnum, _Backend
@@ -26,20 +27,21 @@ except ImportError as e:
 
 class OpenVinoPlatform(Platform):
     #_enum = PlatformEnum.OPENVINO
-    _enum = PlatformEnum.OOT # Check
+    _enum = PlatformEnum.CPU # Check, what is the right selection?
     device_name: str = "openvino"
-    device_type: str = "openvino"
-    dispatch_key: str = "CPU"
+    #device_type: str = "openvino"
+    device_type: str = "cpu" # in v0.8.1, config.py: if self.device_type in ["neuron", "openvino"]: ; self.device = torch.device("cpu")
+    #dispatch_key: str = "CPU" # Is this still required?
 
     @classmethod
     def get_attn_backend_cls(cls, selected_backend: _Backend, head_size: int,
                              dtype: torch.dtype, kv_cache_dtype: Optional[str],
                              block_size: int, use_v1: bool,
                              use_mla: bool) -> str:
-        if selected_backend != _Backend.OPENVINO:
-            logger.info("Cannot use %s backend on OpenVINO.", selected_backend)
+        #if selected_backend != _Backend.OPENVINO:
+        #    logger.info("Cannot use %s backend on OpenVINO.", selected_backend)
         logger.info("Using OpenVINO Attention backend.")
-        return "vllm.attention.backends.openvino.OpenVINOAttentionBackend"
+        return "vllm_openvino.attention.backends.openvino.OpenVINOAttentionBackend"
 
     @classmethod
     def get_device_name(cls, device_id: int = 0) -> str:
@@ -74,9 +76,13 @@ class OpenVinoPlatform(Platform):
         assert (parallel_config.world_size == 1
                 ), "OpenVINO only supports single CPU socket currently."
 
+        #if parallel_config.worker_cls == "auto":
+        #    parallel_config.worker_cls = \
+        #        "vllm.worker.openvino_worker.OpenVINOWorker"
+
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = \
-                "vllm.worker.openvino_worker.OpenVINOWorker"
+                "vllm_openvino.worker.openvino_worker.OpenVINOWorker"
 
         # check and update model config
         model_config = vllm_config.model_config
@@ -146,7 +152,8 @@ class OpenVinoPlatform(Platform):
                 "Invalid environment variable VLLM_OPENVINO_KVCACHE_SPACE"
                 f" {kv_cache_space}, expect a positive integer value.")
 
-        assert vllm_config.device_config.device_type == "openvino"
+        #assert vllm_config.device_config.device_type == "openvino" # see above, device_type!
+        assert vllm_config.device_config.device_type == "cpu"
         assert vllm_config.lora_config is None, \
             "OpenVINO backend doesn't support LoRA"
         assert cls.is_openvino_cpu() or \

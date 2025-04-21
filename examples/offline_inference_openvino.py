@@ -2,6 +2,7 @@
 
 # FROM: examples/offline_inference/basic/basic.py
 
+from dotenv import load_dotenv
 from vllm import LLM, SamplingParams
 
 # Sample prompts.
@@ -16,6 +17,10 @@ sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
 
 
 def main():
+    try:
+        load_dotenv()
+    except:
+        pass
     # Create an LLM.
     llm = LLM(model="facebook/opt-125m")
     # Generate texts from the prompts.

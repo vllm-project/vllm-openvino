@@ -8,13 +8,13 @@ import torch
 from torch import nn
 
 from vllm.attention import get_attn_backend
-from vllm.attention.backends.openvino import OpenVINOAttentionMetadata
+from vllm_openvino.attention.backends.openvino import OpenVINOAttentionMetadata
 from vllm.config import VllmConfig
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.model_executor.model_loader.openvino import get_model
+from vllm_openvino.model_executor.model_loader.openvino import get_model
 from vllm.multimodal import (MULTIMODAL_REGISTRY, BatchedTensorInputs,
                              MultiModalKwargs, MultiModalPlaceholderMap)
 from vllm.sequence import SequenceGroupMetadata

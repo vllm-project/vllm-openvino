@@ -15,5 +15,6 @@ installation of the plugin and its dependencies.
 git clone https://github.com/vllm-project/vllm-openvino.git
 cd vllm-openvino
 uv venv
+#VLLM_TARGET_DEVICE=openvino uv pip install -e .
 VLLM_TARGET_DEVICE=empty uv pip install -e .
 ```
