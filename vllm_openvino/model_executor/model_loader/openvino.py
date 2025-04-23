@@ -11,7 +11,6 @@ from openvino._offline_transformations import paged_attention_transformation
 from optimum.intel import OVModelForCausalLM
 from torch import nn
 
-#import vllm.envs as envs
 import vllm_openvino.envs as envs
 from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
 from vllm.forward_context import get_forward_context

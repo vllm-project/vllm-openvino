@@ -7,7 +7,6 @@ import torch
 import torch.distributed
 import torch.nn as nn
 
-#import vllm.envs as envs
 import vllm_openvino.envs as envs
 from vllm.attention import get_attn_backend
 from vllm.config import (CacheConfig, DeviceConfig, ModelConfig,
@@ -24,7 +23,6 @@ from vllm.platforms import current_platform
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import ExecuteModelRequest, SequenceGroupMetadata
 from vllm.utils import bind_kv_cache
-#from vllm.worker.openvino_model_runner import OpenVINOModelRunner
 from vllm_openvino.worker.openvino_model_runner import OpenVINOModelRunner
 from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
 
@@ -48,7 +46,6 @@ class OpenVINOCacheEngine:
         ov_core: ov.Core,
         ov_device: str,
     ) -> None:
-        #assert device_config.device_type == "openvino"
         assert device_config.device_type == "cpu"
         self.cache_config = cache_config
         self.model_config = model_config

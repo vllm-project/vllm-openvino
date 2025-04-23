@@ -1,13 +1,14 @@
-# Local
+# OpenVINO plugin for vLLM
 
-## uv
+## Installation
 
-Use [uv](https://docs.astral.sh/uv/) package manager to manage the
-installation of the plugin and its dependencies.
+### Local installation
 
-### Install uv
+#### Installing via uv
 
-[Installing uv](https://docs.astral.sh/uv/getting-started/installation/)
+To manage the installation of the plugin and its dependencies,
+utilize the [uv](https://docs.astral.sh/uv/) package manager:
+[installing uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ### Install vLLM OpenVINO
 
@@ -15,6 +16,8 @@ installation of the plugin and its dependencies.
 git clone https://github.com/vllm-project/vllm-openvino.git
 cd vllm-openvino
 uv venv
-#VLLM_TARGET_DEVICE=openvino uv pip install -e .
 VLLM_TARGET_DEVICE=empty uv pip install -e .
+# test
+source .venv/bin/activate
+python examples/offline_inference_openvino.py
 ```

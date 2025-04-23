@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-#import vllm.envs as envs
 import vllm_openvino.envs as envs # not sure if this is a optimal solution!
 from vllm.logger import init_logger
 
@@ -27,9 +26,8 @@ except ImportError as e:
 
 class OpenVinoPlatform(Platform):
     #_enum = PlatformEnum.OPENVINO
-    _enum = PlatformEnum.CPU # Check, what is the right selection?
+    _enum = PlatformEnum.CPU # Check! What is the right selection?
     device_name: str = "openvino"
-    #device_type: str = "openvino"
     device_type: str = "cpu" # in v0.8.1, config.py: if self.device_type in ["neuron", "openvino"]: ; self.device = torch.device("cpu")
     #dispatch_key: str = "CPU" # Is this still required?
 
