@@ -1,0 +1,44 @@
+[build-system]
+requires = [
+  "setuptools>=48",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-openvino"
+description = "vLLM plugin for OpenVINO"
+readme = "README.md"
+license = {text = "Apache 2"} # CHECK
+version = "0.0.0" # TODO
+dependencies = [
+    "openvino >= 2025.1.0",
+    "optimum @ git+https://github.com/huggingface/optimum.git",
+    "optimum-intel[nncf] @ git+https://github.com/huggingface/optimum-intel.git",
+    "vllm",
+]
+requires-python = ">=3.9"
+
+[project.entry-points."vllm.platform_plugins"]
+openvino = "vllm_openvino:register"
+
+[tool.setuptools.packages.find]
+where = ["."]  # list of folders that contain the packages (["."] by default)
+include = ["vllm_openvino*"]  # package names should match these glob patterns (["*"] by default)
+exclude = []  # exclude packages matching these glob patterns (empty by default)
+namespaces = false  # to disable scanning PEP 420 namespaces (true by default)
+
+
+[tool.setuptools_scm]
+# version_file = "vllm_openvino/_version.py" # currently handled by `setup.py:get_version()`
+
+#[tool.uv]
+## Never install torch, so that no dependencies can override it.
+## This requires that torch is installed separately in the target environment.
+#override-dependencies = [
+#    "torch; sys_platform == 'never'",
+#    "torchaudio; sys_platform == 'never'",
+#    "torchvision; sys_platform == 'never'",
+#]
+
+[tool.uv.sources]
+vllm = { git = "https://github.com/vllm-project/vllm", rev = "v0.8.2" } # >=0.8.3 requires transformers>=4.51.1 (optimum-intel)
