@@ -19,7 +19,6 @@ from vllm.model_executor.layers.logits_processor import (LogitsProcessor,
                                                          _prune_hidden_states)
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
@@ -41,32 +40,32 @@ def _flatten_inputs(inputs):
     return flatten_inputs
 
 
-def _modify_cache_parameters(model: ov.Model, kv_cache_dtype: ov.Type,
-                             is_cpu: bool):
-    # Apply hardware dependent modifications to KV tensors
+def _modify_cache_parameters(model: ov.Model, kv_cache_dtype: ov.Type):
+    # set global KV cache precision if kv_cache_dtype is defined
+    if kv_cache_dtype != ov.Type.dynamic:
+        model.set_rt_info(kv_cache_dtype, ["runtime_options", "KV_CACHE_PRECISION"])
+
     for parameter in model.get_parameters():
         input = parameter.get_output_tensor(0)
         input_names = input.get_names()
         if len(input_names) != 1:
             continue
         input_name = next(iter(input_names))
-        shape = parameter.get_partial_shape()
-        # use real block size if available, just a placeholder
-        # to provide the expected rank
-        num_blocks = ov.Dimension()
-        block_size = ov.Dimension()
-        head_size = ov.Dimension()
-        if input_name.startswith("key_cache."):
-            cpu_shape = [num_blocks, shape[1], block_size, head_size]
-            gpu_shape = [num_blocks, shape[1], shape[2], block_size]
-        elif input_name.startswith("value_cache."):
-            cpu_shape = [num_blocks, shape[1], block_size, head_size]
-            gpu_shape = [num_blocks, shape[1], block_size, shape[2]]
-        else:
-            continue
-        parameter.set_partial_shape(
-            ov.PartialShape(cpu_shape if is_cpu else gpu_shape))
-        parameter.set_element_type(kv_cache_dtype)
+        is_key_cache = input_name.startswith("key_cache.")
+        is_value_cache = input_name.startswith("value_cache.")
+
+        if is_key_cache or is_value_cache:
+            shape = parameter.get_partial_shape()
+            num_heads = shape[1].get_length()
+            head_size = shape[2].get_length()
+            # set parameters as dynamic to infer actual shape / type in plugin
+            parameter.set_partial_shape(ov.PartialShape([-1, -1, -1, -1]))
+            parameter.set_element_type(ov.Type.undefined)
+            # specify actual KV cache parameters via runtime information of PagedAttention operation
+            pa_op = next(iter(parameter.output(0).get_target_inputs())).get_node()
+            pa_op.get_rt_info()["num_k_heads" if is_key_cache else "num_v_heads"] = num_heads
+            pa_op.get_rt_info()["k_head_size" if is_key_cache else "v_head_size"] = head_size
+
     model.validate_nodes_and_infer_types()
 
 
@@ -134,11 +133,13 @@ class OpenVINOCausalLM(nn.Module):
             trust_remote_code=model_config.trust_remote_code,
         )
 
-        ov_device = envs.VLLM_OPENVINO_DEVICE
+        # apply Paged Attention transformation
         paged_attention_transformation(pt_model.model)
-        _modify_cache_parameters(pt_model.model, kv_cache_dtype,
-                                 current_platform.is_openvino_cpu())
+        # then set dynamic shapes and precisions for KV cache, so plugins
+        # will automatically resolve them during compile_model
+        _modify_cache_parameters(pt_model.model, kv_cache_dtype)
 
+        ov_device = envs.VLLM_OPENVINO_DEVICE
         ov_compiled = ov_core.compile_model(pt_model.model, ov_device)
         self.ov_request = ov_compiled.create_infer_request()
 

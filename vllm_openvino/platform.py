@@ -74,21 +74,12 @@ class OpenVinoPlatform(Platform):
         assert (parallel_config.world_size == 1
                 ), "OpenVINO only supports single CPU socket currently."
 
-        #if parallel_config.worker_cls == "auto":
-        #    parallel_config.worker_cls = \
-        #        "vllm.worker.openvino_worker.OpenVINOWorker"
-
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = \
                 "vllm_openvino.worker.openvino_worker.OpenVINOWorker"
 
         # check and update model config
         model_config = vllm_config.model_config
-        if model_config.dtype != torch.float32:
-            logger.warning(
-                f"Only float32 dtype is supported on OpenVINO, casting from {model_config.dtype}."  # noqa: G004, E501
-            )
-            model_config.dtype = torch.float32
         if not model_config.enforce_eager:
             logger.warning(
                 "CUDA graph is not supported on OpenVINO backend, fallback to "
@@ -101,26 +92,31 @@ class OpenVinoPlatform(Platform):
         if cache_config and cache_config.block_size is None:
             cache_config.block_size = 16
 
-        if envs.VLLM_OPENVINO_CPU_KV_CACHE_PRECISION == "u8":
-            if not OpenVinoPlatform.is_openvino_cpu():
-                logger.info("VLLM_OPENVINO_CPU_KV_CACHE_PRECISION is "
-                            "ignored for GPU, f16 data type will be used.")
-                cache_config.cache_dtype = ov.Type.f16
-            else:
-                logger.info("KV cache type is overridden to u8 via "
-                            "VLLM_OPENVINO_CPU_KV_CACHE_PRECISION env var.")
-                cache_config.cache_dtype = ov.Type.u8
+        if envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "u8":
+            logger.info("KV cache type is overridden to u8 via "
+                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
+            cache_config.cache_dtype = ov.Type.u8
+        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "i8":
+            logger.info("KV cache type is overridden to i8 via "
+                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
+            cache_config.cache_dtype = ov.Type.i8
+        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "f16" or envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "fp16":
+            logger.info("KV cache type is overridden to fp16 via "
+                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
+            cache_config.cache_dtype = ov.Type.f16
+        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "bf16":
+            logger.info("KV cache type is overridden to bp16 via "
+                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
+            cache_config.cache_dtype = ov.Type.bf16
+        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "fp32" or envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "f32":
+            logger.info("KV cache type is overridden to f16 via "
+                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
+            cache_config.cache_dtype = ov.Type.f32
         else:
-            if OpenVinoPlatform.is_openvino_cpu():
-                ov_device = envs.VLLM_OPENVINO_DEVICE
-                inference_precision = ov_core.get_property(
-                    ov_device, hints.inference_precision)
-                if inference_precision == ov.Type.bf16:
-                    cache_config.cache_dtype = ov.Type.bf16
-                else:
-                    cache_config.cache_dtype = ov.Type.f16
-            else:
-                cache_config.cache_dtype = ov.Type.f16
+            logger.info("KV cache type is not specified via "
+                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var. "
+                        "It will be determined automatically by a plugin")
+            cache_config.cache_dtype = ov.Type.dynamic
 
         if OpenVinoPlatform.is_openvino_cpu():
             if cache_config.block_size != 32:

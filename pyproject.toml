@@ -6,10 +6,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-openvino"
-description = "vLLM plugin for OpenVINO"
+description = "OpenVINO plugin for vLLM"
 readme = "README.md"
-license = {text = "Apache 2"} # CHECK
-version = "0.0.0" # TODO
+license = {text = "Apache 2"}
+version = "0.8.4"
 dependencies = [
     "openvino >= 2025.1.0",
     "optimum @ git+https://github.com/huggingface/optimum.git",
@@ -41,4 +41,4 @@ namespaces = false  # to disable scanning PEP 420 namespaces (true by default)
 #]
 
 [tool.uv.sources]
-vllm = { git = "https://github.com/vllm-project/vllm", rev = "v0.8.2" } # >=0.8.3 requires transformers>=4.51.1 (optimum-intel)
+vllm = { git = "https://github.com/vllm-project/vllm", rev = "v0.8.4" }

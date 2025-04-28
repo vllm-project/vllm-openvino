@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 if TYPE_CHECKING:
     VLLM_OPENVINO_DEVICE: str = "CPU"
     VLLM_OPENVINO_KVCACHE_SPACE: int = 0
-    VLLM_OPENVINO_CPU_KV_CACHE_PRECISION: Optional[str] = None
+    VLLM_OPENVINO_KV_CACHE_PRECISION: Optional[str] = None
     VLLM_OPENVINO_ENABLE_QUANTIZED_WEIGHTS: bool = False
 
 environment_variables: dict[str, Callable[[], Any]] = {
@@ -21,10 +21,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: int(os.getenv("VLLM_OPENVINO_KVCACHE_SPACE", "0")),
 
     # OpenVINO KV cache precision
-    # default is bf16 if natively supported by platform, otherwise f16
-    # To enable KV cache compression, please, explicitly specify u8
-    "VLLM_OPENVINO_CPU_KV_CACHE_PRECISION":
-    lambda: os.getenv("VLLM_OPENVINO_CPU_KV_CACHE_PRECISION", None),
+    # default 'undefined', which means plugin will automatically set
+    # proper value based on model analysis
+    "VLLM_OPENVINO_KV_CACHE_PRECISION":
+    lambda: os.getenv("VLLM_OPENVINO_KV_CACHE_PRECISION", None),
 
     # Enables weights compression during model export via HF Optimum
     # default is False
