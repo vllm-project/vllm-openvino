@@ -40,6 +40,8 @@ class OpenVINOCacheEngine:
     def __init__(
         self,
         cache_config: CacheConfig,
+        key_cache_config: List[ov.PartialShape],
+        value_cache_config: List[ov.PartialShape],
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
         device_config: DeviceConfig,
@@ -51,17 +53,9 @@ class OpenVINOCacheEngine:
         self.model_config = model_config
         self.parallel_config = parallel_config
 
-        self.head_size = model_config.get_head_size()
-        if device_config.device.type == "cpu" and \
-            cache_config.cache_dtype == ov.Type.u8:
-            # Scale, zero point and quantized data will be stored together.
-            # The layout for per token per head:
-            # |scale(f32)|zeropoint(f32)|quantized data(u8,idx_1)|quantized data(u8,idx_2)|...|quantized data(u8,idx_head_size)| # noqa: E501
-            # so, we have to extend head_size by 8, which is sizeof(float)
-            # for scale and sizeof(float) for zeropoint
-            self.head_size += 8
-        self.num_layers = model_config.get_num_layers(parallel_config)
-        self.num_kv_heads = model_config.get_num_kv_heads(parallel_config)
+        self.key_cache_config = key_cache_config
+        self.value_cache_config = value_cache_config
+        self.num_layers = len(self.value_cache_config)
 
         self.block_size = cache_config.block_size
         # Note: In CacheConfig, num_gpu_blocks actual is num_cpu_blocks
@@ -72,7 +66,7 @@ class OpenVINOCacheEngine:
 
         # Get attention backend.
         self.attn_backend = get_attn_backend(
-            self.head_size,
+            model_config.get_head_size(),
             self.model_config.dtype,
             self.cache_config.cache_dtype,
             self.block_size,
@@ -97,35 +91,24 @@ class OpenVINOCacheEngine:
         ov_device: str,
     ) -> List[Tuple[ov.Tensor, ov.Tensor]]:
         """Allocates KV cache."""
-        k_block_shape = v_block_shape = self.attn_backend.get_kv_cache_shape(
-            num_blocks, self.block_size, self.num_kv_heads, self.head_size)[1:]
         kv_cache: List[Tuple[ov.Tensor, ov.Tensor]] = []
 
-        if current_platform.is_openvino_cpu():
-            for _ in range(self.num_layers):
-                key_blocks = ov.Tensor(self.cache_config.cache_dtype,
-                                       k_block_shape)
-                value_blocks = ov.Tensor(self.cache_config.cache_dtype,
-                                         v_block_shape)
+        for key_cache_pshape, value_cache_pshape in zip(self.key_cache_config, self.value_cache_config):
+            key_cache_shape = key_cache_pshape
+            value_cache_shape = value_cache_pshape
+            key_cache_shape[0] = num_blocks
+            value_cache_shape[0] = num_blocks
+            key_cache_shape = key_cache_shape.to_shape()
+            value_cache_shape = value_cache_shape.to_shape()
+
+            if current_platform.is_openvino_cpu():
+                key_blocks = ov.Tensor(self.cache_config.cache_dtype, key_cache_shape)
+                value_blocks = ov.Tensor(self.cache_config.cache_dtype, value_cache_shape)
                 kv_cache.append((key_blocks, value_blocks))
-        else:
-            # Update key_cache shape:
-            k_block_shape = (v_block_shape[0], v_block_shape[1],
-                             v_block_shape[3], v_block_shape[2])
-
-            remote_context = ov_core.get_default_context(ov_device)
-
-            for _ in range(self.num_layers):
-                key_blocks = \
-                    remote_context.create_tensor(self.cache_config.cache_dtype,
-                                                 ov.Shape(k_block_shape),
-                                                 {})
-
-                value_blocks = \
-                    remote_context.create_tensor(self.cache_config.cache_dtype,
-                                                 ov.Shape(v_block_shape),
-                                                 {})
-
+            else:
+                remote_context = ov_core.get_default_context(ov_device)
+                key_blocks = remote_context.create_tensor(self.cache_config.cache_dtype, key_cache_shape, {})
+                value_blocks = remote_context.create_tensor(self.cache_config.cache_dtype, value_cache_shape, {})
                 kv_cache.append((key_blocks, value_blocks))
 
         return kv_cache
@@ -136,8 +119,6 @@ class OpenVINOCacheEngine:
         ov_device: str,
     ) -> List[Tuple[ov.Tensor, ov.Tensor]]:
         """Allocates swap cache."""
-        k_block_shape = v_block_shape = self.attn_backend.get_kv_cache_shape(
-            num_blocks, self.block_size, self.num_kv_heads, self.head_size)[1:]
         swap_cache: List[Tuple[ov.Tensor, ov.Tensor]] = []
 
         if num_blocks == 0:
@@ -146,15 +127,14 @@ class OpenVINOCacheEngine:
         assert not current_platform.is_openvino_cpu(), \
             "CPU device isn't supposed to have swap cache"
 
-        # Update key_cache shape:
-        k_block_shape = (v_block_shape[0], v_block_shape[1], v_block_shape[3],
-                         v_block_shape[2])
+        for key_cache_pshape, value_cache_pshape in zip(self.key_cache_config, self.value_cache_config):
+            key_cache_shape = key_cache_pshape
+            value_cache_shape = value_cache_pshape
+            key_cache_shape[0] = num_blocks
+            value_cache_shape[0] = num_blocks
 
-        for _ in range(self.num_layers):
-            key_blocks = ov.Tensor(self.cache_config.cache_dtype,
-                                   k_block_shape)
-            value_blocks = ov.Tensor(self.cache_config.cache_dtype,
-                                     v_block_shape)
+            key_blocks = ov.Tensor(self.cache_config.cache_dtype, key_cache_shape.to_shape())
+            value_blocks = ov.Tensor(self.cache_config.cache_dtype, value_cache_shape.to_shape())
             swap_cache.append((key_blocks, value_blocks))
 
         return swap_cache
@@ -179,28 +159,15 @@ class OpenVINOCacheEngine:
 
     @staticmethod
     def get_cache_block_size(
-        block_size: int,
         cache_dtype: ov.Type,
-        model_config: ModelConfig,
-        parallel_config: ParallelConfig,
+        key_cache_config: List[ov.PartialShape],
+        value_cache_config: List[ov.PartialShape],
     ) -> int:
-        head_size = model_config.get_head_size()
-        num_kv_heads = model_config.get_num_kv_heads(parallel_config)
-        num_layers = model_config.get_num_layers(parallel_config)
-
-        if cache_dtype == ov.Type.u8:
-            # Scale, zero point and quantized data will be stored together.
-            # The layout for per token per head:
-            # |scale(f32)|zeropoint(f32)|quantized data(u8,idx_1)|quantized data(u8,idx_2)|...|quantized data(u8,idx_head_size)| # noqa: E501
-            # so, we have to extend head_size by 8, which is sizeof(float)
-            # for scale and sizeof(float) for zeropoint
-            head_size += 8
-
-        key_cache_block = block_size * num_kv_heads * head_size
-        value_cache_block = key_cache_block
-        total = num_layers * (key_cache_block + value_cache_block)
-        dtype_size = cache_dtype.size
-        return dtype_size * total
+        total_elements = 0
+        for key_cache_shape, value_cache_shape in zip(key_cache_config, value_cache_config):
+             total_elements += key_cache_shape[1].get_length() * key_cache_shape[2].get_length() * key_cache_shape[3].get_length()
+             total_elements += value_cache_shape[1].get_length() * value_cache_shape[2].get_length() * value_cache_shape[3].get_length()
+        return cache_dtype.size * total_elements
 
 
 class OpenVINOWorker(LoRANotSupportedWorkerBase):
@@ -240,6 +207,7 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
             kv_cache_dtype=self.vllm_config.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
         )
+
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
         self.cache_engine: OpenVINOCacheEngine
@@ -253,12 +221,28 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
     def load_model(self):
         self.model_runner.load_model()
 
+        # we need to take information about KV cache config from compiled model
+        compiled_model = self.model_runner.get_model().ov_request.get_compiled_model()
+
+        self.key_cache_config = []
+        self.value_cache_config = []
+
+        for input_port in compiled_model.inputs:
+            input_name = input_port.get_any_name()
+
+            if input_name.startswith("key_cache."):
+                self.cache_dtype = input_port.get_element_type()
+                self.key_cache_config.append(input_port.get_partial_shape())
+            if input_name.startswith("value_cache."):
+                self.value_cache_config.append(input_port.get_partial_shape())
+
     def determine_num_available_blocks(self) -> Tuple[int, int]:
         """Determine the number of blocks available for the KV cache.
 
         This determines how many KV blocks can fit into the configured
         KV cache space.
         """
+        self.cache_config.cache_dtype = self.cache_dtype
         # For OpenVINO backend, in case of CPU device, the block number will be
         # calculated based on the openvino_kvcache_space_bytes.
         cache_block_size = self.get_cache_block_size_bytes()
@@ -331,8 +315,13 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
 
     def _init_cache_engine(self) -> None:
         ov_device = envs.VLLM_OPENVINO_DEVICE
+        # we need to override precision in self.cache_config to one, inference during compile_model
+        self.cache_config.cache_dtype = self.cache_dtype
+
         self.cache_engine = OpenVINOCacheEngine(
             self.cache_config,
+            self.key_cache_config,
+            self.value_cache_config,
             self.model_config,
             self.parallel_config,
             self.device_config,
@@ -345,12 +334,6 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
         self.model_runner.block_size = self.cache_engine.block_size
 
         assert self.kv_cache is not None
-
-        # Populate the cache to warmup the memory
-        if current_platform.is_openvino_cpu():
-            for key_cache, value_cache in self.kv_cache:
-                key_cache.data[:] = 0
-                value_cache.data[:] = 0
 
     def cache_swap_in(self, src_to_dst: List[Tuple[int, int]]) -> None:
         self.cache_engine.swap_in(src_to_dst)
@@ -441,10 +424,9 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
     def get_cache_block_size_bytes(self) -> int:
         """Return the size in bytes of a single KV cache block."""
         return OpenVINOCacheEngine.get_cache_block_size(
-            self.cache_config.block_size,
             self.cache_config.cache_dtype,
-            self.model_config,
-            self.parallel_config,
+            self.key_cache_config,
+            self.value_cache_config,
         )
 
     def profile_run(self) -> int:
@@ -483,7 +465,12 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
             tmp_cache_config.cache_dtype = cache_config.cache_dtype
 
             profiling_cache_engine = OpenVINOCacheEngine(
-                tmp_cache_config, model_config, parallel_config, device_config,
+                tmp_cache_config,
+                self.key_cache_config,
+                self.value_cache_config,
+                model_config,
+                parallel_config,
+                device_config,
                 ov_core, ov_device)
 
             # Profile memory usage with max_num_sequences sequences and the
