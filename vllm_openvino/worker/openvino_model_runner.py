@@ -72,8 +72,6 @@ class OpenVINOModelRunner(ModelRunnerBase):
 
         # Multi-modal data support
         self.mm_registry = MULTIMODAL_REGISTRY
-        self.multi_modal_input_mapper = self.mm_registry \
-            .create_input_mapper(self.model_config)
 
         # Lazy initialization.
         self.model: nn.Module  # Set after init_Model
@@ -221,19 +219,8 @@ class OpenVINOModelRunner(ModelRunnerBase):
                         seq_len, computed_len, query_len)
 
                 if seq_group_metadata.multi_modal_data:
-                    # NOTE: mm_data only includes the subset of multi-modal
-                    # items that intersect with the current prefill positions.
-                    mm_data, placeholder_maps = MultiModalPlaceholderMap \
+                    mm_kwargs, placeholder_maps = MultiModalPlaceholderMap \
                         .from_seq_group(seq_group_metadata, positions_range)
-
-                    if self.mm_registry.has_processor(self.model_config):
-                        mm_kwargs = mm_data
-                    else:
-                        mm_kwargs = self.multi_modal_input_mapper(
-                            mm_data,
-                            seq_group_metadata.mm_processor_kwargs,
-                        )
-
                     multi_modal_kwargs_list.append(mm_kwargs)
 
                     for modality, placeholder_map in placeholder_maps.items():
