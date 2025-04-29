@@ -59,7 +59,7 @@ def _modify_cache_parameters(model: ov.Model, kv_cache_dtype: ov.Type):
             num_heads = shape[1].get_length()
             head_size = shape[2].get_length()
             # set parameters as dynamic to infer actual shape / type in plugin
-            parameter.set_partial_shape(ov.PartialShape([-1, -1, -1, -1]))
+            parameter.set_partial_shape(ov.PartialShape.dynamic(4))
             parameter.set_element_type(ov.Type.undefined)
             # specify actual KV cache parameters via runtime information of PagedAttention operation
             pa_op = next(iter(parameter.output(0).get_target_inputs())).get_node()
