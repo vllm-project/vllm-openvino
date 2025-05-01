@@ -42,7 +42,7 @@ def _flatten_inputs(inputs):
 
 def _modify_cache_parameters(model: ov.Model, kv_cache_dtype: ov.Type):
     # set global KV cache precision if kv_cache_dtype is defined
-    if kv_cache_dtype != ov.Type.dynamic:
+    if kv_cache_dtype != "dynamic":
         model.set_rt_info(kv_cache_dtype, ["runtime_options", "KV_CACHE_PRECISION"])
 
     for parameter in model.get_parameters():
