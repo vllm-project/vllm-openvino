@@ -36,7 +36,7 @@ cd vllm-openvino
 Finally, install vLLM with OpenVINO backend:
 
 ```console
-PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu" python -m pip install -v .
+VLLM_TARGET_DEVICE="empty" PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu" python -m pip install -v .
 ```
 
 > [!NOTE]
