@@ -95,28 +95,28 @@ class OpenVinoPlatform(Platform):
         if envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "u8":
             logger.info("KV cache type is overridden to u8 via "
                         "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = ov.Type.u8
+            cache_config.cache_dtype = "u8"
         elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "i8":
             logger.info("KV cache type is overridden to i8 via "
                         "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = ov.Type.i8
+            cache_config.cache_dtype = "i8"
         elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "f16" or envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "fp16":
             logger.info("KV cache type is overridden to fp16 via "
                         "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = ov.Type.f16
+            cache_config.cache_dtype = "f16"
         elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "bf16":
             logger.info("KV cache type is overridden to bp16 via "
                         "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = ov.Type.bf16
+            cache_config.cache_dtype = "bf16"
         elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "fp32" or envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "f32":
             logger.info("KV cache type is overridden to f16 via "
                         "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = ov.Type.f32
+            cache_config.cache_dtype = "f32"
         else:
             logger.info("KV cache type is not specified via "
                         "VLLM_OPENVINO_KV_CACHE_PRECISION env var. "
                         "It will be determined automatically by a plugin")
-            cache_config.cache_dtype = ov.Type.dynamic
+            cache_config.cache_dtype = "dynamic"
 
         if OpenVinoPlatform.is_openvino_cpu():
             if cache_config.block_size != 32:

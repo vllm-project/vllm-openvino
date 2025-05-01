@@ -28,6 +28,16 @@ from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
 
 logger = init_logger(__name__)
 
+str_to_ov_type = {
+    "u8": ov.Type.u8,
+    "i8": ov.Type.i8,
+    "fp16": ov.Type.f16,
+    "f16": ov.Type.f16,
+    "bf16": ov.Type.bf16,
+    "f32": ov.Type.f32,
+    "fp32": ov.Type.f32,
+    "dynamic": ov.Type.dynamic,
+}
 
 class OpenVINOCacheEngine:
     """Manages the KV cache for OpenVINO backend.
@@ -73,6 +83,8 @@ class OpenVINOCacheEngine:
             self.model_config.is_attention_free,
         )
 
+        self.ov_cache_dtype = str_to_ov_type[self.cache_config.cache_dtype]
+
         # Initialize the cache.
         self.kv_cache: List[Tuple[ov.Tensor,
                                   ov.Tensor]] = self._allocate_kv_cache(
@@ -102,13 +114,13 @@ class OpenVINOCacheEngine:
             value_cache_shape = value_cache_shape.to_shape()
 
             if current_platform.is_openvino_cpu():
-                key_blocks = ov.Tensor(self.cache_config.cache_dtype, key_cache_shape)
-                value_blocks = ov.Tensor(self.cache_config.cache_dtype, value_cache_shape)
+                key_blocks = ov.Tensor(self.ov_cache_dtype, key_cache_shape)
+                value_blocks = ov.Tensor(self.ov_cache_dtype, value_cache_shape)
                 kv_cache.append((key_blocks, value_blocks))
             else:
                 remote_context = ov_core.get_default_context(ov_device)
-                key_blocks = remote_context.create_tensor(self.cache_config.cache_dtype, key_cache_shape, {})
-                value_blocks = remote_context.create_tensor(self.cache_config.cache_dtype, value_cache_shape, {})
+                key_blocks = remote_context.create_tensor(self.ov_cache_dtype, key_cache_shape, {})
+                value_blocks = remote_context.create_tensor(self.ov_cache_dtype, value_cache_shape, {})
                 kv_cache.append((key_blocks, value_blocks))
 
         return kv_cache
@@ -133,8 +145,8 @@ class OpenVINOCacheEngine:
             key_cache_shape[0] = num_blocks
             value_cache_shape[0] = num_blocks
 
-            key_blocks = ov.Tensor(self.cache_config.cache_dtype, key_cache_shape.to_shape())
-            value_blocks = ov.Tensor(self.cache_config.cache_dtype, value_cache_shape.to_shape())
+            key_blocks = ov.Tensor(self.ov_cache_dtype, key_cache_shape.to_shape())
+            value_blocks = ov.Tensor(self.ov_cache_dtype, value_cache_shape.to_shape())
             swap_cache.append((key_blocks, value_blocks))
 
         return swap_cache
@@ -159,7 +171,7 @@ class OpenVINOCacheEngine:
 
     @staticmethod
     def get_cache_block_size(
-        cache_dtype: ov.Type,
+        cache_dtype: str,
         key_cache_config: List[ov.PartialShape],
         value_cache_config: List[ov.PartialShape],
     ) -> int:
@@ -167,7 +179,7 @@ class OpenVINOCacheEngine:
         for key_cache_shape, value_cache_shape in zip(key_cache_config, value_cache_config):
              total_elements += key_cache_shape[1].get_length() * key_cache_shape[2].get_length() * key_cache_shape[3].get_length()
              total_elements += value_cache_shape[1].get_length() * value_cache_shape[2].get_length() * value_cache_shape[3].get_length()
-        return cache_dtype.size * total_elements
+        return str_to_ov_type[cache_dtype].size * total_elements
 
 
 class OpenVINOWorker(LoRANotSupportedWorkerBase):
@@ -231,7 +243,7 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
             input_name = input_port.get_any_name()
 
             if input_name.startswith("key_cache."):
-                self.cache_dtype = input_port.get_element_type()
+                self.cache_dtype = input_port.get_element_type().to_string()
                 self.key_cache_config.append(input_port.get_partial_shape())
             if input_name.startswith("value_cache."):
                 self.value_cache_config.append(input_port.get_partial_shape())
