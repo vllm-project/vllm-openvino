@@ -67,6 +67,9 @@ OpenVINO vLLM backend supports the following advanced vLLM features:
 - Prefix caching (`--enable-prefix-caching`)
 - Chunked prefill (`--enable-chunked-prefill`)
 
+> [!NOTE]
+> Simultaneous usage of both --enable-prefix-caching and --enable-chunked-prefill is not yet implemented.
+
 ## Performance tips
 
 ### vLLM OpenVINO backend environment variables
