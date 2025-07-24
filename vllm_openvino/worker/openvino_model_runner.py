@@ -269,6 +269,7 @@ class OpenVINOModelRunner(ModelRunnerBase):
             max_context_len=max_context_len_tensor,
             multi_modal_placeholder_index_maps=placeholder_index_maps,
             enable_kv_scales_calculation=False,
+            sampled_token_indices=[]
         )
 
         multi_modal_kwargs = MultiModalKwargs.batch(multi_modal_kwargs_list)

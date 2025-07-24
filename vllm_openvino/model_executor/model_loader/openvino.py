@@ -6,12 +6,11 @@ from typing import Optional
 
 import openvino as ov
 import torch
+import vllm.envs as vllm_envs
 from huggingface_hub import HfApi
 from openvino._offline_transformations import paged_attention_transformation
 from optimum.intel import OVModelForCausalLM
 from torch import nn
-
-import vllm_openvino.envs as envs
 from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
@@ -19,6 +18,9 @@ from vllm.model_executor.layers.logits_processor import (LogitsProcessor,
                                                          _prune_hidden_states)
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.v1.sample.sampler import Sampler as SamplerV1
+
+import vllm_openvino.envs as envs
 
 logger = init_logger(__name__)
 
@@ -95,6 +97,56 @@ def _require_model_export(model_id, revision=None, subfolder=None):
         return True
 
 
+def has_op_with_type(function: ov.Model, type_name: str):
+    for op in function.get_ops():
+        if op.get_type_name() == type_name:
+            return True
+    return False
+
+
+def find_llm_matmul(model: ov.Model):
+    last_node = model.output(0).get_node().input_value(0).get_node()
+
+    # in case of PA all tokens are moved to batch dimension and we have to slice / gather accordingly
+    pa_based_model = has_op_with_type(model, "PagedAttentionExtension")
+    slice_gather_dim = 0 if pa_based_model else 1
+    last_node_type = last_node.get_type_name()
+    matmul = last_node
+    if last_node_type == "MatMul":
+        # Matmul -> Result
+        return matmul, slice_gather_dim
+    elif last_node_type == "Add":
+        # Matmul -> Add -> Result
+        matmul = last_node.input_value(0).node
+    elif last_node_type == "Transpose":
+        # Matmul -> Transpose -> Result
+        matmul = last_node.input_value(0).node
+        order = last_node.input_value(1).node.data
+        slice_gather_dim = order[slice_gather_dim]
+    elif last_node_type == "Multiply":
+        # MatMul -> Divide -> Tanh -> Multiply -> Result
+        multiply = last_node
+        tanh = multiply.input_value(0).node
+        if tanh.get_type_name() == "Tanh":
+            divide = tanh.input_value(0).node
+            if divide.get_type_name() == "Divide":
+                matmul = divide.input_value(0).node
+    assert matmul.get_type_name() == "MatMul", "Could not find MatMul in the model output."
+    return matmul, slice_gather_dim
+
+
+def apply_gather_before_matmul_transformation(model: ov.Model):
+    matmul, slice_gather_dim = find_llm_matmul(model)
+    if matmul.get_type_name() == "MatMul" and matmul.input(0).get_partial_shape().rank == 3:
+        indices = ov.op.Parameter(ov.Type.i64, ov.PartialShape([-1]))
+        indices.set_friendly_name("sampled_tokens_indices")
+        indices.output(0).get_tensor().set_names({"sampled_tokens_indices"})
+        axis = ov.op.Constant(ov.Type.i64, ov.Shape([1]), [slice_gather_dim])
+        gather = ov.opset8.gather(matmul.input_value(0), indices, axis)
+        matmul.input(0).replace_source_output(gather.output(0))
+        model.add_parameters([indices])
+
+
 class OpenVINOCausalLM(nn.Module):
 
     def __init__(
@@ -106,7 +158,10 @@ class OpenVINOCausalLM(nn.Module):
         super().__init__()
         self.logits_processor = LogitsProcessor(
             model_config.hf_config.vocab_size, logits_as_input=True)
-        self.sampler = Sampler()
+        if vllm_envs.VLLM_USE_V1:
+            self.sampler = SamplerV1()
+        else:
+            self.sampler = Sampler()
 
         export = _require_model_export(model_config.model)
         if export:
@@ -135,6 +190,8 @@ class OpenVINOCausalLM(nn.Module):
 
         # apply Paged Attention transformation
         paged_attention_transformation(pt_model.model)
+        if vllm_envs.VLLM_USE_V1:
+            apply_gather_before_matmul_transformation(pt_model.model)
         # then set dynamic shapes and precisions for KV cache, so plugins
         # will automatically resolve them during compile_model
         _modify_cache_parameters(pt_model.model, kv_cache_dtype)
@@ -163,7 +220,10 @@ class OpenVINOCausalLM(nn.Module):
             attn_metadata.max_context_len,
         ]
 
-        self.ov_request.start_async(inputs, share_inputs=True)
+        if vllm_envs.VLLM_USE_V1:
+            inputs.append(attn_metadata.sampled_token_indices)
+
+        self.ov_request.start_async(inputs)
         self.ov_request.wait()
 
         logits = torch.from_numpy(self.ov_request.get_tensor("logits").data)
@@ -173,7 +233,8 @@ class OpenVINOCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
+        if not vllm_envs.VLLM_USE_V1:
+            hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
         logits = self.logits_processor(None, hidden_states, sampling_metadata)
         return logits
 

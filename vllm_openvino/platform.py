@@ -3,17 +3,17 @@
 from typing import TYPE_CHECKING, Optional
 
 import torch
-
-import vllm_openvino.envs as envs # not sure if this is a optimal solution!
+import vllm.envs as vllm_envs
 from vllm.logger import init_logger
-
 from vllm.platforms.interface import Platform, PlatformEnum, _Backend
 
+import vllm_openvino.envs as envs  # not sure if this is a optimal solution!
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig
+    from vllm.config import VllmConfig, ModelConfig
 else:
     VllmConfig = None
+    ModelConfig = None
 
 logger = init_logger(__name__)
 
@@ -75,8 +75,12 @@ class OpenVinoPlatform(Platform):
                 ), "OpenVINO only supports single CPU socket currently."
 
         if parallel_config.worker_cls == "auto":
-            parallel_config.worker_cls = \
-                "vllm_openvino.worker.openvino_worker.OpenVINOWorker"
+            if vllm_envs.VLLM_USE_V1:
+                parallel_config.worker_cls = \
+                    "vllm_openvino.worker_v1.openvino_worker_v1.OpenVINOWorkerV1"
+            else:
+                parallel_config.worker_cls = \
+                    "vllm_openvino.worker.openvino_worker.OpenVINOWorker"
 
         # check and update model config
         model_config = vllm_config.model_config
@@ -153,3 +157,10 @@ class OpenVinoPlatform(Platform):
         assert cls.is_openvino_cpu() or \
             cls.is_openvino_gpu(), \
             "OpenVINO backend supports only CPU and GPU devices"
+
+    @classmethod
+    def supports_v1(cls, model_config: ModelConfig) -> bool:
+        """Returns whether the current platform can support v1 for the supplied
+        model configuration.
+        """
+        return True

@@ -144,3 +144,6 @@ class OpenVINOAttentionMetadata:
     # Enable/disable KV scales calculation. This is so that we can disable the
     # calculation until after prefill and cuda graph capture.
     enable_kv_scales_calculation: bool
+
+    # Indices of sampled tokens, used in V1 vLLM API only.
+    sampled_token_indices: torch.Tensor
