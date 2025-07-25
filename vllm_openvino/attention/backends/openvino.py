@@ -146,4 +146,4 @@ class OpenVINOAttentionMetadata:
     enable_kv_scales_calculation: bool
 
     # Indices of sampled tokens, used in V1 vLLM API only.
-    sampled_token_indices: torch.Tensor
+    sampled_token_indices: ov.Tensor
