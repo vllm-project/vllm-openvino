@@ -433,6 +433,7 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
         device_config = self.device_config
         input_registry = INPUT_REGISTRY
         mm_registry = MULTIMODAL_REGISTRY
+        mm_registry.init_mm_limits_per_prompt(model_config)
 
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.

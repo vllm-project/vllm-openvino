@@ -20,6 +20,9 @@ from vllm.utils import bind_kv_cache
 from vllm.v1.kv_cache_interface import KVCacheSpec, KVCacheConfig, FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerBase
+from vllm.v1.core.sched.output import SchedulerOutput, NewRequestData
+from vllm.v1.worker.gpu_input_batch import InputBatch
+from vllm.utils import (cdiv, is_pin_memory_available)
 
 import vllm_openvino.envs as envs
 from vllm_openvino.worker_v1.openvino_model_runner_v1 import OpenVINOModelRunnerV1
@@ -221,7 +224,6 @@ class OpenVINOWorkerV1(WorkerBase):
     def profile_run(self) -> int:
         ov_device = envs.VLLM_OPENVINO_DEVICE
 
-        #TODO: check this
         assert not current_platform.is_openvino_cpu(), \
             "CPU device isn't supposed to use profile run."
 
@@ -235,6 +237,7 @@ class OpenVINOWorkerV1(WorkerBase):
         device_config = self.device_config
         input_registry = INPUT_REGISTRY
         mm_registry = MULTIMODAL_REGISTRY
+        mm_registry.init_mm_limits_per_prompt(model_config)
 
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
@@ -262,37 +265,32 @@ class OpenVINOWorkerV1(WorkerBase):
                 device_config,
                 ov_core, ov_device)
 
-            # Profile memory usage with max_num_sequences sequences and the
-            # total # number of tokens equal to max_num_batched_tokens.
-            seqs: List[SequenceGroupMetadata] = []
+            total_num_scheduled_tokens = 0
+            num_scheduled_tokens = {}
+            reqs = []
+            block_size = cache_config.block_size
+            num_blocks = 0
+
             for group_id in range(max_num_seqs):
                 seq_len = (max_num_batched_tokens // max_num_seqs +
                            (group_id < max_num_batched_tokens % max_num_seqs))
-                block_size = cache_config.block_size
                 seq_num_blocks = (seq_len + block_size - 1) // block_size
 
-                dummy_data = input_registry \
-                    .dummy_data_for_profiling(model_config,
-                                              seq_len,
-                                              mm_registry)
+                dummy_data = input_registry.dummy_data_for_profiling(model_config,seq_len,mm_registry)
 
-                block_tables = [[0] * seq_num_blocks] * max_num_seqs
-                seq = SequenceGroupMetadata(
-                    request_id=str(group_id),
-                    is_prompt=True,
-                    seq_data={group_id: dummy_data.seq_data},
-                    sampling_params=sampling_params,
-                    block_tables=block_tables,
-                    lora_request=None,
-                    multi_modal_data=dummy_data.multi_modal_data)
-                seqs.append(seq)
+                block_table = list(range(num_blocks, num_blocks + seq_num_blocks))
+                num_blocks += seq_num_blocks
+                reqs.append(NewRequestData(str(group_id), list(dummy_data.seq_data.prompt_token_ids), str(dummy_data.seq_data.prompt_token_ids), [],[],[], sampling_params, block_table, 0, None))
+                num_scheduled_tokens[str(group_id)] = seq_len
+                total_num_scheduled_tokens += seq_len
 
+            scheduler_output = SchedulerOutput(reqs, [], num_scheduled_tokens, total_num_scheduled_tokens, [], [], [], [], [], [], None)
             self.model_runner.block_size = tmp_cache_config.block_size
 
             bind_kv_cache(self.compilation_config.static_forward_context,
                           profiling_cache_engine.kv_cache)
             # Run the model with the dummy inputs.
-            self.model_runner.execute_model(seqs,
+            self.model_runner.execute_model(scheduler_output,
                                             profiling_cache_engine.kv_cache)
 
             # Explicitly revert bind_kv_cache and delete temporary KV cache
@@ -372,6 +370,16 @@ class OpenVINOWorkerV1(WorkerBase):
                 "memory {total_device_memory_str}. Please consider to "
                 "decrease `max_num_batched_tokens` or increase "
                 "`gpu_memory_utilization`")
+
+        # Reset input batch
+        self.model_runner.input_batch = InputBatch(
+            max_num_reqs=self.vllm_config.scheduler_config.max_num_seqs,
+            max_model_len=self.vllm_config.model_config.max_model_len,
+            max_num_blocks_per_req=cdiv(self.vllm_config.model_config.max_model_len, self.vllm_config.cache_config.block_size),
+            device=self.device,
+            pin_memory=is_pin_memory_available(),
+            vocab_size=self.vllm_config.model_config.get_vocab_size(),
+        )
 
         return total_device_memory * memory_utilization - used_device_mem
 

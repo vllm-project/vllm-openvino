@@ -14,7 +14,7 @@ from vllm.multimodal import (BatchedTensorInputs,
 from vllm.sampling_params import SamplingType
 from vllm.utils import (cdiv,
                         is_pin_memory_available)
-from vllm.v1.outputs import (ModelRunnerOutput)
+from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 
