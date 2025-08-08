@@ -223,7 +223,7 @@ class OpenVINOCausalLM(nn.Module):
         if vllm_envs.VLLM_USE_V1:
             inputs.append(attn_metadata.sampled_token_indices)
 
-        self.ov_request.start_async(inputs)
+        self.ov_request.start_async(inputs, share_inputs=True)
         self.ov_request.wait()
 
         logits = torch.from_numpy(self.ov_request.get_tensor("logits").data)
