@@ -37,3 +37,9 @@ def determine_num_available_blocks(current_platform,  cache_config, cache_block_
                               cache_block_size)
 
     return num_device_blocks, num_swap_blocks
+
+def get_max_allocatable_memory_gpu(key_cache_config, value_cache_config):
+    # Tensor allocation is limited with 4GB on GPU
+    max_tensor_alloc_size_gpu = 4 * 1024 * 1024 * 1024
+    assert len(key_cache_config) == len(value_cache_config), "Key cache config length should be equal to value cache config length."
+    return len(key_cache_config) * 2 * max_tensor_alloc_size_gpu
