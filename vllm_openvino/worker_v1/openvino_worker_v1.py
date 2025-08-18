@@ -27,7 +27,7 @@ from vllm.utils import (cdiv, is_pin_memory_available)
 import vllm_openvino.envs as envs
 from vllm_openvino.worker_v1.openvino_model_runner_v1 import OpenVINOModelRunnerV1
 from vllm_openvino.worker.openvino_worker import OpenVINOCacheEngine
-from vllm_openvino.utils import determine_num_available_blocks
+from vllm_openvino.utils import determine_num_available_blocks, get_max_allocatable_memory_gpu
 
 logger = init_logger(__name__)
 
@@ -381,7 +381,8 @@ class OpenVINOWorkerV1(WorkerBase):
             vocab_size=self.vllm_config.model_config.get_vocab_size(),
         )
 
-        return total_device_memory * memory_utilization - used_device_mem
+        available_memory = total_device_memory * memory_utilization - used_device_mem
+        return min(available_memory, get_max_allocatable_memory_gpu(ov_core, ov_device, self.key_cache_config, self.value_cache_config))
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """Get specifications for KV cache implementation."""

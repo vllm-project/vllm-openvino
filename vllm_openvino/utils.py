@@ -37,3 +37,13 @@ def determine_num_available_blocks(current_platform,  cache_config, cache_block_
                               cache_block_size)
 
     return num_device_blocks, num_swap_blocks
+
+def get_max_allocatable_memory_gpu(ov_core, ov_device, key_cache_config, value_cache_config):
+    import openvino.properties.intel_gpu as intel_gpu
+    if not hasattr(intel_gpu, "device_max_alloc_mem_size"):
+        import sys
+        return sys.maxsize
+
+    max_tensor_alloc_size_gpu = ov_core.get_property(ov_device, intel_gpu.device_max_alloc_mem_size)
+    assert len(key_cache_config) == len(value_cache_config), "Key cache config length should be equal to value cache config length."
+    return len(key_cache_config) * 2 * max_tensor_alloc_size_gpu
