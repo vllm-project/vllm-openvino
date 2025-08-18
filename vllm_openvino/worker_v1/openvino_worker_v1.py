@@ -382,7 +382,7 @@ class OpenVINOWorkerV1(WorkerBase):
         )
 
         available_memory = total_device_memory * memory_utilization - used_device_mem
-        return min(available_memory, get_max_allocatable_memory_gpu(self.key_cache_config, self.value_cache_config))
+        return min(available_memory, get_max_allocatable_memory_gpu(ov_core, ov_device, self.key_cache_config, self.value_cache_config))
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """Get specifications for KV cache implementation."""
