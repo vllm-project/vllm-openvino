@@ -10,6 +10,7 @@ import vllm.envs as vllm_envs
 from huggingface_hub import HfApi
 from openvino._offline_transformations import paged_attention_transformation
 from optimum.intel import OVModelForCausalLM
+from optimum.intel.utils.import_utils import is_openvino_version
 from torch import nn
 from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
 from vllm.forward_context import get_forward_context
@@ -67,8 +68,6 @@ def _modify_cache_parameters(model: ov.Model, kv_cache_dtype: ov.Type):
             pa_op = next(iter(parameter.output(0).get_target_inputs())).get_node()
             pa_op.get_rt_info()["num_k_heads" if is_key_cache else "num_v_heads"] = num_heads
             pa_op.get_rt_info()["k_head_size" if is_key_cache else "v_head_size"] = head_size
-
-    model.validate_nodes_and_infer_types()
 
 
 def _require_model_export(model_id, revision=None, subfolder=None):
@@ -192,9 +191,11 @@ class OpenVINOCausalLM(nn.Module):
         paged_attention_transformation(pt_model.model)
         if vllm_envs.VLLM_USE_V1:
             apply_gather_before_matmul_transformation(pt_model.model)
-        # then set dynamic shapes and precisions for KV cache, so plugins
-        # will automatically resolve them during compile_model
-        _modify_cache_parameters(pt_model.model, kv_cache_dtype)
+        if is_openvino_version("<", "2026.0.0"):
+            # then set dynamic shapes and precisions for KV cache, so plugins
+            # will automatically resolve them during compile_model
+            _modify_cache_parameters(pt_model.model, kv_cache_dtype)
+        pt_model.model.validate_nodes_and_infer_types()
 
         ov_device = envs.VLLM_OPENVINO_DEVICE
         ov_compiled = ov_core.compile_model(pt_model.model, ov_device)
