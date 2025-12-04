@@ -25,7 +25,7 @@ from vllm.sequence import ExecuteModelRequest, SequenceGroupMetadata
 from vllm.utils import bind_kv_cache
 from vllm_openvino.worker.openvino_model_runner import OpenVINOModelRunner
 from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
-from vllm_openvino.utils import determine_num_available_blocks
+from vllm_openvino.utils import determine_num_available_blocks, get_max_allocatable_memory_gpu
 
 logger = init_logger(__name__)
 
@@ -572,4 +572,5 @@ class OpenVINOWorker(LoRANotSupportedWorkerBase):
                 "decrease `max_num_batched_tokens` or increase "
                 "`gpu_memory_utilization`")
 
-        return total_device_memory * memory_utilization - used_device_mem
+        available_memory = total_device_memory * memory_utilization - used_device_mem
+        return min(available_memory, get_max_allocatable_memory_gpu(ov_core, ov_device, self.key_cache_config, self.value_cache_config))
