@@ -4,6 +4,7 @@
 
 from dotenv import load_dotenv
 from vllm import LLM, SamplingParams
+import yaml
 
 # Sample prompts.
 prompts = [
@@ -13,7 +14,7 @@ prompts = [
     "The future of AI is",
 ]
 # Create a sampling params object.
-sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=200)
 
 
 def main():
@@ -22,7 +23,9 @@ def main():
     except:
         pass
     # Create an LLM.
-    llm = LLM(model="facebook/opt-125m")
+    with open("config.yaml", "r") as file:
+        data = yaml.safe_load(file)
+    llm = LLM(model="facebook/opt-125m", additional_config=data)
     # Generate texts from the prompts.
     # The output is a list of RequestOutput objects
     # that contain the prompt, generated text, and other information.

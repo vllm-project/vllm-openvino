@@ -3,41 +3,33 @@
 from typing import TYPE_CHECKING, Optional
 
 import torch
-import vllm.envs as vllm_envs
-from vllm.logger import init_logger
-from vllm.platforms.interface import Platform, PlatformEnum, _Backend
 
-import vllm_openvino.envs as envs  # not sure if this is a optimal solution!
+from vllm.logger import init_logger
+from vllm.platforms.interface import Platform, PlatformEnum
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig, ModelConfig
+    from vllm.config import VllmConfig
 else:
     VllmConfig = None
-    ModelConfig = None
 
 logger = init_logger(__name__)
 
 try:
     import openvino as ov
-    import openvino.properties.hint as hints
 except ImportError as e:
     logger.warning("Failed to import OpenVINO with %r", e)
-
-
+    
 class OpenVinoPlatform(Platform):
-    #_enum = PlatformEnum.OPENVINO
-    _enum = PlatformEnum.CPU # Check! What is the right selection?
+    # OOT (Out-Of-Tree) refers to hardware platforms that are integrated with vLLM
+    # through plugin projects, rather than being part of the vLLM core.
+    _enum = PlatformEnum.OOT
     device_name: str = "openvino"
-    device_type: str = "cpu" # in v0.8.1, config.py: if self.device_type in ["neuron", "openvino"]: ; self.device = torch.device("cpu")
-    #dispatch_key: str = "CPU" # Is this still required?
-
+    device_type: str = "cpu" 
+    
     @classmethod
-    def get_attn_backend_cls(cls, selected_backend: _Backend, head_size: int,
-                             dtype: torch.dtype, kv_cache_dtype: Optional[str],
-                             block_size: int, use_v1: bool,
-                             use_mla: bool) -> str:
-        #if selected_backend != _Backend.OPENVINO:
-        #    logger.info("Cannot use %s backend on OpenVINO.", selected_backend)
+    def get_attn_backend_cls(cls,
+                            selected_backend: "AttentionBackendEnum",
+                            attn_selector_config: "AttentionSelectorConfig") -> str:
         logger.info("Using OpenVINO Attention backend.")
         return "vllm_openvino.attention.backends.openvino.OpenVINOAttentionBackend"
 
@@ -46,42 +38,35 @@ class OpenVinoPlatform(Platform):
         return "openvino"
 
     @classmethod
-    def is_async_output_supported(cls, enforce_eager: Optional[bool]) -> bool:
-        return False
-
-    @classmethod
     def inference_mode(cls):
         return torch.inference_mode(mode=True)
 
     @classmethod
     def is_openvino_cpu(cls) -> bool:
-        return "CPU" in envs.VLLM_OPENVINO_DEVICE
+        return True
 
     @classmethod
     def is_openvino_gpu(cls) -> bool:
-        return "GPU" in envs.VLLM_OPENVINO_DEVICE
+        return False
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:
-        logger.warning("Pin memory is not supported on OpenViNO.")
+        logger.warning("Pin memory is not supported on OpenVINO.")
         return False
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
-        from vllm.utils import GiB_bytes
+        GiB_bytes = 1_073_741_824
 
         parallel_config = vllm_config.parallel_config
+        openvino_config = vllm_config.additional_config.get("openvino", {})
+        
         assert (parallel_config.world_size == 1
                 ), "OpenVINO only supports single CPU socket currently."
 
         if parallel_config.worker_cls == "auto":
-            if vllm_envs.VLLM_USE_V1:
-                parallel_config.worker_cls = \
-                    "vllm_openvino.worker_v1.openvino_worker_v1.OpenVINOWorkerV1"
-            else:
-                parallel_config.worker_cls = \
-                    "vllm_openvino.worker.openvino_worker.OpenVINOWorker"
-
+            parallel_config.worker_cls = \
+                "vllm_openvino.worker_v1.openvino_worker_v1.OpenVINOWorkerV1"
         # check and update model config
         model_config = vllm_config.model_config
         if not model_config.enforce_eager:
@@ -90,52 +75,24 @@ class OpenVinoPlatform(Platform):
                 "the eager mode.")
             model_config.enforce_eager = True
 
-        # check and update cache config
-        ov_core = ov.Core()
         cache_config = vllm_config.cache_config
         if cache_config and cache_config.block_size is None:
+            # for openVINO cpu will be updated to 32
             cache_config.block_size = 16
 
-        if envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "u8":
-            logger.info("KV cache type is overridden to u8 via "
-                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = "u8"
-        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "i8":
-            logger.info("KV cache type is overridden to i8 via "
-                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = "i8"
-        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "f16" or envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "fp16":
-            logger.info("KV cache type is overridden to fp16 via "
-                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = "f16"
-        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "bf16":
-            logger.info("KV cache type is overridden to bp16 via "
-                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = "bf16"
-        elif envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "fp32" or envs.VLLM_OPENVINO_KV_CACHE_PRECISION == "f32":
-            logger.info("KV cache type is overridden to f16 via "
-                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var.")
-            cache_config.cache_dtype = "f32"
-        else:
-            logger.info("KV cache type is not specified via "
-                        "VLLM_OPENVINO_KV_CACHE_PRECISION env var. "
-                        "It will be determined automatically by a plugin")
-            cache_config.cache_dtype = "dynamic"
+       
+        cache_config.cache_dtype = "dynamic"
+        
+        logger.info("OpenVINO runtime config: %s", openvino_config)
 
-        if OpenVinoPlatform.is_openvino_cpu():
-            if cache_config.block_size != 32:
-                logger.info(
-                    f"OpenVINO CPU optimal block size is 32, overriding currently set {cache_config.block_size}"  # noqa: G004, E501
-                )
-                cache_config.block_size = 32
-        else:
-            if cache_config.block_size != 16:
-                logger.info(
-                    f"OpenVINO GPU optimal block size is 16, overriding currently set {cache_config.block_size}"  # noqa: G004, E501
-                )
-                cache_config.block_size = 16
+        assert OpenVinoPlatform.is_openvino_cpu()
+        if cache_config.block_size != 32:
+            logger.info(
+                f"OpenVINO CPU optimal block size is 32, overriding currently set {cache_config.block_size}"  # noqa: G004, E501
+            )
+            cache_config.block_size = 32
 
-        kv_cache_space = envs.VLLM_OPENVINO_KVCACHE_SPACE
+        kv_cache_space = openvino_config.get("VLLM_OPENVINO_KVCACHE_SPACE", 0)
         if kv_cache_space >= 0:
             if kv_cache_space == 0 and OpenVinoPlatform.is_openvino_cpu():
                 cache_config.openvino_kvcache_space_bytes = 4 * GiB_bytes  # type: ignore
@@ -157,10 +114,3 @@ class OpenVinoPlatform(Platform):
         assert cls.is_openvino_cpu() or \
             cls.is_openvino_gpu(), \
             "OpenVINO backend supports only CPU and GPU devices"
-
-    @classmethod
-    def supports_v1(cls, model_config: ModelConfig) -> bool:
-        """Returns whether the current platform can support v1 for the supplied
-        model configuration.
-        """
-        return True
