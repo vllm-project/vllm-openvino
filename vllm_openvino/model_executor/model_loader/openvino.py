@@ -6,7 +6,7 @@ from typing import Optional
 
 import openvino as ov
 import torch
-import vllm.envs as vllm_envs
+
 from huggingface_hub import HfApi
 from openvino._offline_transformations import paged_attention_transformation
 from optimum.intel import OVModelForCausalLM
@@ -15,13 +15,8 @@ from torch import nn
 from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.layers.logits_processor import (LogitsProcessor,
-                                                         _prune_hidden_states)
-from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.v1.sample.sampler import Sampler as SamplerV1
-
-import vllm_openvino.envs as envs
 
 logger = init_logger(__name__)
 
@@ -151,16 +146,14 @@ class OpenVINOCausalLM(nn.Module):
     def __init__(
         self,
         ov_core: ov.Core,
-        model_config: ModelConfig,
+        vllm_config: VllmConfig,
         kv_cache_dtype: ov.Type,
     ) -> None:
         super().__init__()
+        model_config = vllm_config.model_config
         self.logits_processor = LogitsProcessor(
-            model_config.hf_config.vocab_size, logits_as_input=True)
-        if vllm_envs.VLLM_USE_V1:
-            self.sampler = SamplerV1()
-        else:
-            self.sampler = Sampler()
+        model_config.hf_config.vocab_size, logits_as_input=True)
+        self.sampler = SamplerV1()
 
         export = _require_model_export(model_config.model)
         if export:
@@ -177,28 +170,24 @@ class OpenVINOCausalLM(nn.Module):
                 "as-is, all possible options that may affect model conversion "
                 "are ignored.")
 
-        load_in_8bit = (envs.VLLM_OPENVINO_ENABLE_QUANTIZED_WEIGHTS
-                        if export else False)
         pt_model = OVModelForCausalLM.from_pretrained(
             model_config.model,
             export=export,
             compile=False,
-            load_in_8bit=load_in_8bit,
             trust_remote_code=model_config.trust_remote_code,
         )
 
         # apply Paged Attention transformation
         paged_attention_transformation(pt_model.model)
-        if vllm_envs.VLLM_USE_V1:
-            apply_gather_before_matmul_transformation(pt_model.model)
+        apply_gather_before_matmul_transformation(pt_model.model)
         if is_openvino_version("<", "2026.0.0"):
             # then set dynamic shapes and precisions for KV cache, so plugins
             # will automatically resolve them during compile_model
             _modify_cache_parameters(pt_model.model, kv_cache_dtype)
         pt_model.model.validate_nodes_and_infer_types()
 
-        ov_device = envs.VLLM_OPENVINO_DEVICE
-        ov_compiled = ov_core.compile_model(pt_model.model, ov_device)
+        openvino_config = vllm_config.additional_config.get("openvino", {})
+        ov_compiled = ov_core.compile_model(pt_model.model, "CPU", openvino_config.get("OPENVINO_RUNTIME_CONFIG", {}))
         self.ov_request = ov_compiled.create_infer_request()
 
     def forward(
@@ -221,9 +210,8 @@ class OpenVINOCausalLM(nn.Module):
             attn_metadata.max_context_len,
         ]
 
-        if vllm_envs.VLLM_USE_V1:
-            inputs.append(attn_metadata.sampled_token_indices)
-
+        inputs.append(attn_metadata.sampled_token_indices)
+            
         self.ov_request.start_async(inputs, share_inputs=True)
         self.ov_request.wait()
 
@@ -233,17 +221,16 @@ class OpenVINOCausalLM(nn.Module):
         return logits.view(-1, logits.shape[-1])
 
     def compute_logits(self, hidden_states: torch.Tensor,
-                       sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        if not vllm_envs.VLLM_USE_V1:
-            hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
+                       sampling_metadata) -> torch.Tensor:
+        # check if some kind of pruning required
         logits = self.logits_processor(None, hidden_states, sampling_metadata)
         return logits
 
     def sample(
         self,
         logits: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[SamplerOutput]:
+        sampling_metadata,
+    ) :
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
 
@@ -263,5 +250,5 @@ def get_model(
             "please open an issue on github.")
 
     with set_current_vllm_config(vllm_config):
-        return OpenVINOCausalLM(ov_core, vllm_config.model_config,
+        return OpenVINOCausalLM(ov_core, vllm_config,
                                 kv_cache_dtype)

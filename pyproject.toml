@@ -9,12 +9,13 @@ name = "vllm-openvino"
 description = "OpenVINO plugin for vLLM"
 readme = "README.md"
 license = {text = "Apache 2"}
-version = "0.8.4"
+# version to track the vLLM version support
+version = "0.16.0"
 dependencies = [
-    "openvino >= 2025.1.0",
+    "openvino >= 2026.1.0",
     #optimum is in dependency list of optimum-intel
-    "optimum-intel[nncf] @ git+https://github.com/huggingface/optimum-intel.git@dba7dced0145b539bb0563e5d5741d00daeb8025",
-    "vllm == 0.8.4",
+    "optimum-intel[nncf] == 1.27.0",
+    "vllm == 0.16.0",
 ]
 requires-python = ">=3.9"
 
@@ -41,4 +42,4 @@ namespaces = false  # to disable scanning PEP 420 namespaces (true by default)
 #]
 
 [tool.uv.sources]
-vllm = { git = "https://github.com/vllm-project/vllm", rev = "v0.8.4" }
+vllm = { git = "https://github.com/vllm-project/vllm", rev = "v0.16.0" }
