@@ -210,21 +210,37 @@ class OpenVINOCausalLM(nn.Module):
         flat_kv_caches = _flatten_inputs(kv_caches)
         attn_metadata = get_forward_context().attn_metadata
 
-        inputs = [
-            input_ids,
-            positions,
-            *flat_kv_caches,
-            attn_metadata.past_lens,
-            attn_metadata.subsequence_begins,
-            attn_metadata.block_indices,
-            attn_metadata.block_indices_begins,
-            attn_metadata.max_context_len,
-        ]
+        max_context_len = attn_metadata.max_context_len
+        past_lens = attn_metadata.past_lens
+        subsequence_begins = attn_metadata.subsequence_begins
+        block_indices_begins = attn_metadata.block_indices_begins
+        block_indices = attn_metadata.block_indices
+
+        if not vllm_envs.VLLM_USE_V1:
+            input_ids = ov.Tensor(input_ids.numpy())
+            positions = ov.Tensor(positions.numpy())
+            max_context_len = ov.Tensor(max_context_len.numpy())
+            past_lens = ov.Tensor(past_lens.numpy())
+            subsequence_begins = ov.Tensor(subsequence_begins.numpy())
+            block_indices_begins = ov.Tensor(block_indices_begins.numpy())
+            block_indices = ov.Tensor(block_indices.numpy())
+
+        self.ov_request.set_tensor("input_ids", input_ids)
+        self.ov_request.set_tensor("position_ids", positions)
+        self.ov_request.set_tensor("max_context_len", max_context_len)
+        self.ov_request.set_tensor("past_lens", past_lens)
+        self.ov_request.set_tensor("subsequence_begins", subsequence_begins)
+        self.ov_request.set_tensor("block_indices_begins", block_indices_begins)
+        self.ov_request.set_tensor("block_indices", block_indices)
+
+        for i in range(0, int(len(flat_kv_caches) / 2)):
+            self.ov_request.set_tensor("key_cache.{}".format(i), flat_kv_caches[i * 2])
+            self.ov_request.set_tensor("value_cache.{}".format(i), flat_kv_caches[i * 2 + 1])
 
         if vllm_envs.VLLM_USE_V1:
-            inputs.append(attn_metadata.sampled_token_indices)
+            self.ov_request.set_tensor("sampled_tokens_indices", attn_metadata.sampled_token_indices)
 
-        self.ov_request.start_async(inputs, share_inputs=True)
+        self.ov_request.start_async()
         self.ov_request.wait()
 
         logits = torch.from_numpy(self.ov_request.get_tensor("logits").data)
