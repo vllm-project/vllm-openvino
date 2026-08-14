@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Dict, List, Optional, Tuple
 
 import openvino as ov
 import torch
 
-from vllm.attention.backends.abstract import (AttentionBackend,
-                                              AttentionMetadata)
-from vllm.attention.backends.utils import CommonAttentionState
-from vllm.multimodal import MultiModalPlaceholderMap
+from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata
 
 
 def copy_cache_block(src_tensor: ov.Tensor, dst_tensor: ov.Tensor,
@@ -45,17 +42,15 @@ class OpenVINOAttentionBackend(AttentionBackend):
 
     @staticmethod
     def get_impl_cls():
-        # OpenVINO implements PagedAttention as part of the Optimum
-        # exported model
+        raise NotImplementedError
+
+    @staticmethod
+    def get_builder_cls():
         raise NotImplementedError
 
     @staticmethod
     def make_metadata(*args, **kwargs) -> "AttentionMetadata":
         raise NotImplementedError
-
-    @staticmethod
-    def get_state_cls() -> Type["CommonAttentionState"]:
-        return CommonAttentionState
 
     @staticmethod
     def make_openvino_metadata(*args, **kwargs) -> "OpenVINOAttentionMetadata":
@@ -67,6 +62,7 @@ class OpenVINOAttentionBackend(AttentionBackend):
         block_size: int,
         num_kv_heads: int,
         head_size: int,
+        cache_dtype_str: str = "auto",
     ) -> Tuple[int, ...]:
         return (2, num_blocks, num_kv_heads, block_size, head_size)
 
@@ -138,8 +134,7 @@ class OpenVINOAttentionMetadata:
     # N.B. These aren't really related to attention and don't belong on this
     # type -- this is just a temporary solution to make them available to
     # `model_executable`.
-    multi_modal_placeholder_index_maps: Optional[Dict[
-        str, MultiModalPlaceholderMap.IndexMap]]
+    multi_modal_placeholder_index_maps: Optional[Dict[str, int]]
 
     # Enable/disable KV scales calculation. This is so that we can disable the
     # calculation until after prefill and cuda graph capture.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-from typing import List, Optional, Tuple, Set
+from typing import List, Set, Tuple
 
 import openvino as ov
 import torch
@@ -8,25 +8,19 @@ import torch.nn as nn
 from vllm.config import (CacheConfig, VllmConfig)
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment)
-from vllm.inputs import INPUT_REGISTRY
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.model_executor import set_random_seed
-from vllm.multimodal import MULTIMODAL_REGISTRY
+from vllm.utils.torch_utils import set_random_seed
 from vllm.platforms import current_platform
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import ExecuteModelRequest, SequenceGroupMetadata
-from vllm.utils import bind_kv_cache
 from vllm.v1.kv_cache_interface import KVCacheSpec, KVCacheConfig, FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.worker.worker_base import WorkerBase
+from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase
 from vllm.v1.core.sched.output import SchedulerOutput, NewRequestData
-from vllm.v1.worker.gpu_input_batch import InputBatch
-from vllm.utils import (cdiv, is_pin_memory_available)
 
 import vllm_openvino.envs as envs
 from vllm_openvino.worker_v1.openvino_model_runner_v1 import OpenVINOModelRunnerV1
-from vllm_openvino.worker.openvino_worker import OpenVINOCacheEngine
+from vllm_openvino.worker.openvino_cache_engine import OpenVINOCacheEngine
 from vllm_openvino.utils import determine_num_available_blocks, get_max_allocatable_memory_gpu
 
 logger = init_logger(__name__)
@@ -72,11 +66,6 @@ class OpenVINOWorkerV1(WorkerBase):
         if self.is_driver_worker:
             assert self.rank == 0, "The driver worker must have rank 0."
 
-        if self.model_config.trust_remote_code:
-            # note: lazy import to avoid importing torch before initializing
-            from vllm.utils import init_cached_hf_modules
-
-            init_cached_hf_modules()
         self.model_runner = OpenVINOModelRunnerV1(
             self.ov_core,
             vllm_config=self.vllm_config,
@@ -94,7 +83,7 @@ class OpenVINOWorkerV1(WorkerBase):
         # Set random seed.
         set_random_seed(self.model_config.seed)
 
-    def load_model(self):
+    def load_model(self, *, load_dummy_weights: bool = False) -> None:
         self.model_runner.load_model()
 
         # we need to take information about KV cache config from compiled model
@@ -168,8 +157,6 @@ class OpenVINOWorkerV1(WorkerBase):
             ov_device,
         )
         self.kv_cache = self.cache_engine.kv_cache
-        bind_kv_cache(self.compilation_config.static_forward_context,
-                      [self.kv_cache])
         self.model_runner.block_size = self.cache_engine.block_size
 
         assert self.kv_cache is not None
@@ -177,20 +164,22 @@ class OpenVINOWorkerV1(WorkerBase):
     def get_model(self) -> nn.Module:
         return self.model_runner.get_model()
 
+    def get_supported_tasks(self) -> tuple[str, ...]:
+        return ("generate",)
+
     def execute_model(
         self,
-        execute_model_req: Optional[ExecuteModelRequest] = None,
+        scheduler_output: SchedulerOutput,
     ) -> ModelRunnerOutput:
-        if execute_model_req.total_num_scheduled_tokens == 0:
+        if scheduler_output.total_num_scheduled_tokens == 0:
             return ModelRunnerOutput(
                 req_ids=[],
                 req_id_to_index={},
                 sampled_token_ids=[],
-                spec_token_ids=None,
                 logprobs=None,
                 prompt_logprobs_dict={},
             )
-        return self.model_runner.execute_model(execute_model_req, self.kv_cache)
+        return self.model_runner.execute_model(scheduler_output, self.kv_cache)
 
     def init_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
@@ -235,10 +224,6 @@ class OpenVINOWorkerV1(WorkerBase):
         model_config = self.model_config
         parallel_config = self.parallel_config
         device_config = self.device_config
-        input_registry = INPUT_REGISTRY
-        mm_registry = MULTIMODAL_REGISTRY
-        mm_registry.init_mm_limits_per_prompt(model_config)
-
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
         def model_profile_run():
@@ -248,10 +233,12 @@ class OpenVINOWorkerV1(WorkerBase):
             max_num_batched_tokens = \
                 self.scheduler_config.max_num_batched_tokens
             max_num_seqs = self.scheduler_config.max_num_seqs
-            tmp_cache_config = CacheConfig(cache_config.block_size,
-                                           cache_config.gpu_memory_utilization,
-                                           cache_config.swap_space_bytes,
-                                           "auto")
+            tmp_cache_config = CacheConfig(
+                block_size=cache_config.block_size,
+                gpu_memory_utilization=cache_config.gpu_memory_utilization,
+                cache_dtype="auto",
+                enable_prefix_caching=False,
+            )
             tmp_cache_config.num_gpu_blocks = 1
             tmp_cache_config.num_cpu_blocks = 0
             tmp_cache_config.cache_dtype = cache_config.cache_dtype
@@ -265,40 +252,37 @@ class OpenVINOWorkerV1(WorkerBase):
                 device_config,
                 ov_core, ov_device)
 
-            total_num_scheduled_tokens = 0
             num_scheduled_tokens = {}
             reqs = []
             block_size = cache_config.block_size
-            num_blocks = 0
 
             for group_id in range(max_num_seqs):
                 seq_len = (max_num_batched_tokens // max_num_seqs +
                            (group_id < max_num_batched_tokens % max_num_seqs))
                 seq_num_blocks = (seq_len + block_size - 1) // block_size
 
-                dummy_data = input_registry.dummy_data_for_profiling(model_config,seq_len,mm_registry)
-
-                block_table = list(range(num_blocks, num_blocks + seq_num_blocks))
-                num_blocks += seq_num_blocks
-                reqs.append(NewRequestData(str(group_id), list(dummy_data.seq_data.prompt_token_ids), str(dummy_data.seq_data.prompt_token_ids), [],[],[], sampling_params, block_table, 0, None))
+                block_table = [0] * seq_num_blocks
+                reqs.append(NewRequestData(
+                    req_id=str(group_id),
+                    prompt_token_ids=list(range(seq_len)),
+                    mm_features=[],
+                    sampling_params=sampling_params,
+                    pooling_params=None,
+                    block_ids=(block_table,),
+                    num_computed_tokens=0,
+                    lora_request=None,
+                ))
                 num_scheduled_tokens[str(group_id)] = seq_len
-                total_num_scheduled_tokens += seq_len
 
-            scheduler_output = SchedulerOutput(reqs, [], num_scheduled_tokens, total_num_scheduled_tokens, [], [], [], [], [], [], None)
+            scheduler_output = SchedulerOutput.make_empty()
+            scheduler_output.scheduled_new_reqs = reqs
+            scheduler_output.num_scheduled_tokens = num_scheduled_tokens
+            scheduler_output.total_num_scheduled_tokens = sum(
+                num_scheduled_tokens.values())
             self.model_runner.block_size = tmp_cache_config.block_size
 
-            bind_kv_cache(self.compilation_config.static_forward_context,
-                          profiling_cache_engine.kv_cache)
-            # Run the model with the dummy inputs.
             self.model_runner.execute_model(scheduler_output,
                                             profiling_cache_engine.kv_cache)
-
-            # Explicitly revert bind_kv_cache and delete temporary KV cache
-            # manager to free KV cache when real inputs will be passed to OV
-            bind_kv_cache(self.compilation_config.static_forward_context, [[
-                torch.tensor([])
-                for _ in range(len(profiling_cache_engine.kv_cache))
-            ]])
             del profiling_cache_engine
 
             logger.info(
@@ -371,16 +355,6 @@ class OpenVINOWorkerV1(WorkerBase):
                 "decrease `max_num_batched_tokens` or increase "
                 "`gpu_memory_utilization`")
 
-        # Reset input batch
-        self.model_runner.input_batch = InputBatch(
-            max_num_reqs=self.vllm_config.scheduler_config.max_num_seqs,
-            max_model_len=self.vllm_config.model_config.max_model_len,
-            max_num_blocks_per_req=cdiv(self.vllm_config.model_config.max_model_len, self.vllm_config.cache_config.block_size),
-            device=self.device,
-            pin_memory=is_pin_memory_available(),
-            vocab_size=self.vllm_config.model_config.get_vocab_size(),
-        )
-
         available_memory = total_device_memory * memory_utilization - used_device_mem
         return min(available_memory, get_max_allocatable_memory_gpu(ov_core, ov_device, self.key_cache_config, self.value_cache_config))
 
@@ -400,8 +374,7 @@ class OpenVINOWorkerV1(WorkerBase):
                                                                                  value_cache_shape[1].get_length()),
                                                                 head_size=max(key_cache_shape[3].get_length(),
                                                                               value_cache_shape[3].get_length()),
-                                                                dtype=str_to_torch_type[cache_type],
-                                                                use_mla=False)
+                                                                dtype=str_to_torch_type[cache_type])
         return kv_cache_spec
 
     def determine_available_memory(self) -> int:
@@ -422,9 +395,10 @@ class OpenVINOWorkerV1(WorkerBase):
         """Allocate NPU KV cache with the specified kv_cache_config."""
         self.initialize_cache(kv_cache_config.num_blocks, self.num_swap_blocks)
 
-    def compile_or_warm_up_model(self) -> None:
-        # Compile is performed on model loading stage
-        pass
+    def compile_or_warm_up_model(self) -> CompilationTimes:
+        self.model_runner.warm_up_sampler()
+        set_random_seed(self.model_config.seed)
+        return CompilationTimes(language_model=0.0, encoder=0.0)
 
     def list_loras(self) -> Set[int]:
         raise NotImplementedError("LoRA is not supported.")
@@ -439,4 +413,7 @@ class OpenVINOWorkerV1(WorkerBase):
         raise NotImplementedError("LoRA is not supported.")
 
     def determine_num_available_blocks(self) -> Tuple[int, int]:
-        return self.kv_cache_config.num_blocks
+        cache_block_size = self.get_cache_block_size_bytes()
+        return determine_num_available_blocks(
+            current_platform, self.cache_config, cache_block_size,
+            self.profile_run)

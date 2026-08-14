@@ -6,19 +6,15 @@ from typing import Optional
 
 import openvino as ov
 import torch
-import vllm.envs as vllm_envs
 from huggingface_hub import HfApi
 from openvino._offline_transformations import paged_attention_transformation
-from optimum.intel import OVModelForCausalLM
-from optimum.intel.utils.import_utils import is_openvino_version
 from torch import nn
 from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.layers.logits_processor import (LogitsProcessor,
-                                                         _prune_hidden_states)
-from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.v1.outputs import SamplerOutput
+from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler as SamplerV1
 
 import vllm_openvino.envs as envs
@@ -157,10 +153,7 @@ class OpenVINOCausalLM(nn.Module):
         super().__init__()
         self.logits_processor = LogitsProcessor(
             model_config.hf_config.vocab_size, logits_as_input=True)
-        if vllm_envs.VLLM_USE_V1:
-            self.sampler = SamplerV1()
-        else:
-            self.sampler = Sampler()
+        self.sampler = SamplerV1()
 
         export = _require_model_export(model_config.model)
         if export:
@@ -179,18 +172,27 @@ class OpenVINOCausalLM(nn.Module):
 
         load_in_8bit = (envs.VLLM_OPENVINO_ENABLE_QUANTIZED_WEIGHTS
                         if export else False)
+        from optimum.intel import OVModelForCausalLM
+        from optimum.intel.utils.import_utils import is_openvino_version
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            model_config.model,
+            trust_remote_code=model_config.trust_remote_code,
+        )
+        if hasattr(config, "vision_config"):
+            config.vision_config = None
         pt_model = OVModelForCausalLM.from_pretrained(
             model_config.model,
             export=export,
             compile=False,
             load_in_8bit=load_in_8bit,
             trust_remote_code=model_config.trust_remote_code,
+            config=config,
         )
 
         # apply Paged Attention transformation
         paged_attention_transformation(pt_model.model)
-        if vllm_envs.VLLM_USE_V1:
-            apply_gather_before_matmul_transformation(pt_model.model)
+        apply_gather_before_matmul_transformation(pt_model.model)
         if is_openvino_version("<", "2026.0.0"):
             # then set dynamic shapes and precisions for KV cache, so plugins
             # will automatically resolve them during compile_model
@@ -216,15 +218,6 @@ class OpenVINOCausalLM(nn.Module):
         block_indices_begins = attn_metadata.block_indices_begins
         block_indices = attn_metadata.block_indices
 
-        if not vllm_envs.VLLM_USE_V1:
-            input_ids = ov.Tensor(input_ids.numpy())
-            positions = ov.Tensor(positions.numpy())
-            max_context_len = ov.Tensor(max_context_len.numpy())
-            past_lens = ov.Tensor(past_lens.numpy())
-            subsequence_begins = ov.Tensor(subsequence_begins.numpy())
-            block_indices_begins = ov.Tensor(block_indices_begins.numpy())
-            block_indices = ov.Tensor(block_indices.numpy())
-
         self.ov_request.set_tensor("input_ids", input_ids)
         self.ov_request.set_tensor("position_ids", positions)
         self.ov_request.set_tensor("max_context_len", max_context_len)
@@ -237,8 +230,8 @@ class OpenVINOCausalLM(nn.Module):
             self.ov_request.set_tensor("key_cache.{}".format(i), flat_kv_caches[i * 2])
             self.ov_request.set_tensor("value_cache.{}".format(i), flat_kv_caches[i * 2 + 1])
 
-        if vllm_envs.VLLM_USE_V1:
-            self.ov_request.set_tensor("sampled_tokens_indices", attn_metadata.sampled_token_indices)
+        self.ov_request.set_tensor("sampled_tokens_indices",
+                                   attn_metadata.sampled_token_indices)
 
         self.ov_request.start_async()
         self.ov_request.wait()
@@ -250,8 +243,6 @@ class OpenVINOCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        if not vllm_envs.VLLM_USE_V1:
-            hidden_states = _prune_hidden_states(hidden_states, sampling_metadata)
         logits = self.logits_processor(None, hidden_states, sampling_metadata)
         return logits
 

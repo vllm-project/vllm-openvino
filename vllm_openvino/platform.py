@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 from typing import TYPE_CHECKING, Optional
 
 import torch
-import vllm.envs as vllm_envs
 from vllm.logger import init_logger
-from vllm.platforms.interface import Platform, PlatformEnum, _Backend
+from vllm.platforms.interface import Platform, PlatformEnum
 
 import vllm_openvino.envs as envs  # not sure if this is a optimal solution!
 
@@ -25,19 +25,13 @@ except ImportError as e:
 
 
 class OpenVinoPlatform(Platform):
-    #_enum = PlatformEnum.OPENVINO
-    _enum = PlatformEnum.CPU # Check! What is the right selection?
+    _enum = PlatformEnum.CPU
     device_name: str = "openvino"
-    device_type: str = "cpu" # in v0.8.1, config.py: if self.device_type in ["neuron", "openvino"]: ; self.device = torch.device("cpu")
-    #dispatch_key: str = "CPU" # Is this still required?
+    device_type: str = "cpu"
 
     @classmethod
-    def get_attn_backend_cls(cls, selected_backend: _Backend, head_size: int,
-                             dtype: torch.dtype, kv_cache_dtype: Optional[str],
-                             block_size: int, use_v1: bool,
-                             use_mla: bool) -> str:
-        #if selected_backend != _Backend.OPENVINO:
-        #    logger.info("Cannot use %s backend on OpenVINO.", selected_backend)
+    def get_attn_backend_cls(cls, selected_backend, attn_selector_config,
+                             num_heads: int | None = None) -> str:
         logger.info("Using OpenVINO Attention backend.")
         return "vllm_openvino.attention.backends.openvino.OpenVINOAttentionBackend"
 
@@ -63,24 +57,28 @@ class OpenVinoPlatform(Platform):
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:
-        logger.warning("Pin memory is not supported on OpenViNO.")
+        logger.warning("Pin memory is not supported on OpenVINO.")
         return False
 
     @classmethod
+    def manual_seed_all(cls, seed: int) -> None:
+        torch.manual_seed(seed)
+
+    @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
-        from vllm.utils import GiB_bytes
+        from vllm.utils.mem_constants import GiB_bytes
 
         parallel_config = vllm_config.parallel_config
         assert (parallel_config.world_size == 1
                 ), "OpenVINO only supports single CPU socket currently."
 
+        if vllm_config.scheduler_config.async_scheduling:
+            logger.warning("Async scheduling is not supported on OpenVINO.")
+            vllm_config.scheduler_config.async_scheduling = False
+
         if parallel_config.worker_cls == "auto":
-            if vllm_envs.VLLM_USE_V1:
-                parallel_config.worker_cls = \
-                    "vllm_openvino.worker_v1.openvino_worker_v1.OpenVINOWorkerV1"
-            else:
-                parallel_config.worker_cls = \
-                    "vllm_openvino.worker.openvino_worker.OpenVINOWorker"
+            parallel_config.worker_cls = \
+                "vllm_openvino.worker_v1.openvino_worker_v1.OpenVINOWorkerV1"
 
         # check and update model config
         model_config = vllm_config.model_config
@@ -93,6 +91,11 @@ class OpenVinoPlatform(Platform):
         # check and update cache config
         ov_core = ov.Core()
         cache_config = vllm_config.cache_config
+        if cache_config.enable_prefix_caching:
+            logger.warning(
+                "Prefix caching is disabled until OpenVINO cache block copy "
+                "support is integrated with the V1 scheduler.")
+            cache_config.enable_prefix_caching = False
         if cache_config and cache_config.block_size is None:
             cache_config.block_size = 16
 
@@ -150,13 +153,32 @@ class OpenVinoPlatform(Platform):
                 "Invalid environment variable VLLM_OPENVINO_KVCACHE_SPACE"
                 f" {kv_cache_space}, expect a positive integer value.")
 
-        #assert vllm_config.device_config.device_type == "openvino" # see above, device_type!
         assert vllm_config.device_config.device_type == "cpu"
         assert vllm_config.lora_config is None, \
             "OpenVINO backend doesn't support LoRA"
         assert cls.is_openvino_cpu() or \
             cls.is_openvino_gpu(), \
             "OpenVINO backend supports only CPU and GPU devices"
+
+    @classmethod
+    def import_kernels(cls) -> None:
+        ignored_msg = "dynamic module does not define module export function"
+        if torch.cpu._is_avx512_supported():
+            module_name = ("vllm._C" if torch.cpu._is_avx512_bf16_supported()
+                           else "vllm._C_AVX512")
+        else:
+            module_name = "vllm._C_AVX2"
+        try:
+            __import__(module_name)
+        except ModuleNotFoundError:
+            # Native vLLM kernels are intentionally absent for the empty target.
+            pass
+        except ImportError as error:
+            if ignored_msg not in str(error):
+                logger.warning_once("Failed to import %s: %r", module_name,
+                                    error)
+        with contextlib.suppress(ImportError):
+            import vllm._moe_C_stable_libtorch  # noqa: F401
 
     @classmethod
     def supports_v1(cls, model_config: ModelConfig) -> bool:
