@@ -36,6 +36,9 @@ def copy_cache_block(src_tensor: ov.Tensor, dst_tensor: ov.Tensor,
 
 class OpenVINOAttentionBackend(AttentionBackend):
 
+    # PagedAttention is embedded in the exported OpenVINO graph, so vLLM's
+    # attention implementation and metadata builder are not used.
+
     @staticmethod
     def get_name() -> str:
         return "OPENVINO"

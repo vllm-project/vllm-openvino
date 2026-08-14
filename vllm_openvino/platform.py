@@ -25,6 +25,8 @@ except ImportError as e:
 
 
 class OpenVinoPlatform(Platform):
+    # vLLM-side tensors and sampling stay on CPU. VLLM_OPENVINO_DEVICE selects
+    # the actual OpenVINO CPU or GPU execution target.
     _enum = PlatformEnum.CPU
     device_name: str = "openvino"
     device_type: str = "cpu"

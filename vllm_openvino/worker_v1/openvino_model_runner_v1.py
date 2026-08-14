@@ -107,6 +107,9 @@ class OpenVINOModelRunnerV1:
         scheduled_req_ids = scheduler_output.num_scheduled_tokens.keys()
         resumed_req_ids = scheduler_output.scheduled_cached_reqs.resumed_req_ids
         cached_req_ids = self.input_batch.req_id_to_index.keys()
+        # Remove unscheduled requests from the persistent batch but retain
+        # their cached state. Remove resumed requests as well so stale block
+        # tables are cleared before they are re-added.
         for req_id in cached_req_ids - (scheduled_req_ids - resumed_req_ids):
             self.input_batch.remove_request(req_id)
 
@@ -144,10 +147,13 @@ class OpenVINOModelRunnerV1:
             num_computed_tokens = req_data.num_computed_tokens[i]
             req_state.num_computed_tokens = num_computed_tokens
             num_output_tokens = req_data.num_output_tokens[i]
+            # Align local output history if the scheduler rolled tokens back.
             if num_output_tokens < len(req_state.output_token_ids):
                 del req_state.output_token_ids[num_output_tokens:]
 
             new_block_ids = req_data.new_block_ids[i]
+            # Resumed requests replace their block tables; running requests
+            # append only blocks allocated since the previous step.
             if req_id in req_data.resumed_req_ids:
                 assert new_block_ids is not None
                 req_state.block_ids = new_block_ids
@@ -202,6 +208,8 @@ class OpenVINOModelRunnerV1:
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens.get(
                 req_id, 0)
             last_token_position = num_scheduled_tokens + request.num_computed_tokens
+            # Materialize this step's scheduled suffix, crossing from prompt
+            # tokens into generated tokens when necessary.
             tokens = [] if request.num_computed_tokens >= len(request.prompt_token_ids) else request.prompt_token_ids[request.num_computed_tokens:last_token_position]
             tokens += request.output_token_ids[request.num_computed_tokens - len(request.prompt_token_ids): last_token_position - len(request.prompt_token_ids)]
             seq_len = len(tokens) + request.num_computed_tokens
@@ -215,6 +223,8 @@ class OpenVINOModelRunnerV1:
             past_lens.append(request.num_computed_tokens)
             subsequence_begins.append(subsequence_begins[-1] + query_len)
 
+        # Each packed-sequence endpoint identifies the token whose logits are
+        # gathered for sampling.
         sampled_token_indices = np.array(subsequence_begins[1:]) - 1
 
         input_tokens = ov.Tensor(np.array(input_tokens, dtype=np.int64))
@@ -329,6 +339,8 @@ class OpenVINOModelRunnerV1:
 
             sampled_ids = valid_sampled_tokens[i]
             if sampled_ids:
+                # Single-rank V1 does not return sampled IDs in the next
+                # SchedulerOutput, so cache them locally for the next step.
                 req_index = self.input_batch.req_id_to_index[req_id]
                 start_idx = self.input_batch.num_tokens_no_spec[req_index]
                 end_idx = start_idx + len(sampled_ids)

@@ -2,7 +2,8 @@
 
 The vLLM OpenVINO plugin provides text generation for supported decoder-only
 causal language models on x86-64 CPUs with AVX2 support and on integrated and
-discrete Intel GPUs.
+discrete Intel GPUs
+([the list of supported GPUs](https://docs.openvino.ai/2024/about-openvino/release-notes-openvino/system-requirements.html#gpu)).
 
 > [!NOTE]
 > There are no pre-built plugin wheels or images. Install or build the plugin

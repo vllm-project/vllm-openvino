@@ -131,6 +131,7 @@ def find_llm_matmul(model: ov.Model):
 
 
 def apply_gather_before_matmul_transformation(model: ov.Model):
+    """Gather sampled positions before the LM head to avoid unused logits."""
     matmul, slice_gather_dim = find_llm_matmul(model)
     if matmul.get_type_name() == "MatMul" and matmul.input(0).get_partial_shape().rank == 3:
         indices = ov.op.Parameter(ov.Type.i64, ov.PartialShape([-1]))
@@ -180,6 +181,8 @@ class OpenVINOCausalLM(nn.Module):
             trust_remote_code=model_config.trust_remote_code,
         )
         if hasattr(config, "vision_config"):
+            # The runner does not execute vision inputs, so omit the vision
+            # tower when Optimum exports the language model.
             config.vision_config = None
         pt_model = OVModelForCausalLM.from_pretrained(
             model_config.model,

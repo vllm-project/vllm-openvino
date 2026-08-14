@@ -86,7 +86,8 @@ class OpenVINOWorkerV1(WorkerBase):
     def load_model(self, *, load_dummy_weights: bool = False) -> None:
         self.model_runner.load_model()
 
-        # we need to take information about KV cache config from compiled model
+        # Read KV-cache shapes and precision from the compiled model so cache
+        # allocation matches the actual OpenVINO graph inputs.
         compiled_model = self.model_runner.get_model().ov_request.get_compiled_model()
 
         self.key_cache_config = []
@@ -143,7 +144,7 @@ class OpenVINOWorkerV1(WorkerBase):
 
     def _init_cache_engine(self) -> None:
         ov_device = envs.VLLM_OPENVINO_DEVICE
-        # we need to override precision in self.cache_config to one, inference during compile_model
+        # Use the precision OpenVINO inferred while compiling the model.
         self.cache_config.cache_dtype = self.cache_dtype
 
         self.cache_engine = OpenVINOCacheEngine(
@@ -256,11 +257,15 @@ class OpenVINOWorkerV1(WorkerBase):
             reqs = []
             block_size = cache_config.block_size
 
+            # Exercise the largest configured batch by distributing the token
+            # budget across the maximum number of sequences.
             for group_id in range(max_num_seqs):
                 seq_len = (max_num_batched_tokens // max_num_seqs +
                            (group_id < max_num_batched_tokens % max_num_seqs))
                 seq_num_blocks = (seq_len + block_size - 1) // block_size
 
+                # Profiling uses one physical KV block; logical blocks alias it
+                # because cache capacity is budgeted separately.
                 block_table = [0] * seq_num_blocks
                 reqs.append(NewRequestData(
                     req_id=str(group_id),
@@ -378,8 +383,7 @@ class OpenVINOWorkerV1(WorkerBase):
         return kv_cache_spec
 
     def determine_available_memory(self) -> int:
-        """Determines how much memory is needed for KV-cache
-        """
+        """Return the bytes available for KV-cache allocation."""
         self.cache_config.cache_dtype = self.cache_dtype
         # For OpenVINO backend, in case of CPU device, the block number will be
         # calculated based on the openvino_kvcache_space_bytes.
@@ -392,10 +396,12 @@ class OpenVINOWorkerV1(WorkerBase):
         return num_device_blocks * cache_block_size
 
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
-        """Allocate NPU KV cache with the specified kv_cache_config."""
+        """Allocate the OpenVINO KV cache described by the V1 config."""
         self.initialize_cache(kv_cache_config.num_blocks, self.num_swap_blocks)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
+        # OpenVINO compiles the model during load; only vLLM's lazily compiled
+        # CPU sampler needs warmup here.
         self.model_runner.warm_up_sampler()
         set_random_seed(self.model_config.seed)
         return CompilationTimes(language_model=0.0, encoder=0.0)

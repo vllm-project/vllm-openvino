@@ -21,6 +21,8 @@ str_to_ov_type = {
 
 
 class OpenVINOCacheEngine:
+    """Allocate OpenVINO KV-cache tensors and perform block operations."""
+
     def __init__(self, cache_config: CacheConfig,
                  key_cache_config: List[ov.PartialShape],
                  value_cache_config: List[ov.PartialShape],
@@ -35,6 +37,8 @@ class OpenVINOCacheEngine:
         self.value_cache_config = value_cache_config
         self.num_layers = len(value_cache_config)
         self.block_size = cache_config.block_size
+        # vLLM names device-resident blocks num_gpu_blocks even when the
+        # selected OpenVINO target is a CPU.
         self.num_device_blocks = cache_config.num_gpu_blocks
         self.num_swap_blocks = cache_config.num_cpu_blocks
         self.attn_backend = OpenVINOAttentionBackend()
