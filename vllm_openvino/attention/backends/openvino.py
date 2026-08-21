@@ -9,29 +9,38 @@ import torch
 from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata
 
 
+def create_roi_view(tensor: ov.Tensor, block_number: int) -> ov.Tensor:
+    """Return a view of the given cache tensor limited to one KV block."""
+    roi_begin = [0, 0, 0, 0]
+    roi_end = list(tensor.get_shape())
+    roi_begin[0] = block_number
+    roi_end[0] = block_number + 1
+
+    if isinstance(tensor, ov.Tensor):
+        return ov.Tensor(tensor, roi_begin, roi_end)
+    else:
+        return ov.RemoteTensor(tensor, roi_begin, roi_end)
+
+
 def copy_cache_block(src_tensor: ov.Tensor, dst_tensor: ov.Tensor,
                      src_offset: int, dst_offset: int) -> None:
-
-    def create_roi_tensor(
-        tensor: ov.Tensor,
-        block_number: int,
-    ) -> ov.Tensor:
-        roi_begin = ov.runtime.Coordinate([0, 0, 0, 0])
-        roi_end = ov.runtime.Coordinate(tensor.get_shape())
-
-        roi_begin[0] = block_number
-        roi_end[0] = block_number + 1
-
-        if isinstance(tensor, ov.Tensor):
-            return ov.Tensor(tensor, roi_begin, roi_end)
-        else:
-            return ov.RemoteTensor(tensor, roi_begin, roi_end)
-
-    src_roi_tensor = \
-        create_roi_tensor(src_tensor, src_offset)
-    dst_roi_tensor = \
-        create_roi_tensor(dst_tensor, dst_offset)
+    src_roi_tensor = create_roi_view(src_tensor, src_offset)
+    dst_roi_tensor = create_roi_view(dst_tensor, dst_offset)
     src_roi_tensor.copy_to(dst_roi_tensor)
+
+
+def zero_cache_block(tensor: ov.Tensor, block_number: int) -> None:
+    """Fill one KV cache block with zeros."""
+    roi_tensor = create_roi_view(tensor, block_number)
+    if isinstance(tensor, ov.Tensor):
+        roi_tensor.data.fill(0)
+    else:
+        # Remote tensors do not expose writable host memory, so zero a host
+        # buffer and copy it into the target block instead.
+        zero_tensor = ov.Tensor(tensor.get_element_type(),
+                                list(roi_tensor.get_shape()))
+        zero_tensor.data.fill(0)
+        zero_tensor.copy_to(roi_tensor)
 
 
 class OpenVINOAttentionBackend(AttentionBackend):
@@ -87,6 +96,16 @@ class OpenVINOAttentionBackend(AttentionBackend):
             for key_cache, value_cache in kv_caches:
                 copy_cache_block(key_cache, key_cache, src, dst)
                 copy_cache_block(value_cache, value_cache, src, dst)
+
+    @staticmethod
+    def zero_blocks(
+        kv_caches: List[Tuple[ov.Tensor, ov.Tensor]],
+        block_ids: List[int],
+    ) -> None:
+        for block_id in block_ids:
+            for key_cache, value_cache in kv_caches:
+                zero_cache_block(key_cache, block_id)
+                zero_cache_block(value_cache, block_id)
 
 
 @dataclass

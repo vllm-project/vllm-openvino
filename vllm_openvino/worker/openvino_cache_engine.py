@@ -100,6 +100,10 @@ class OpenVINOCacheEngine:
         if src_to_dsts:
             self.attn_backend.copy_blocks(self.kv_cache, src_to_dsts)
 
+    def zero_blocks(self, block_ids):
+        if block_ids:
+            self.attn_backend.zero_blocks(self.kv_cache, block_ids)
+
     @staticmethod
     def get_cache_block_size(cache_dtype, key_cache_config,
                              value_cache_config) -> int:

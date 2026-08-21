@@ -93,11 +93,6 @@ class OpenVinoPlatform(Platform):
         # check and update cache config
         ov_core = ov.Core()
         cache_config = vllm_config.cache_config
-        if cache_config.enable_prefix_caching:
-            logger.warning(
-                "Prefix caching is disabled until OpenVINO cache block copy "
-                "support is integrated with the V1 scheduler.")
-            cache_config.enable_prefix_caching = False
         if cache_config and cache_config.block_size is None:
             cache_config.block_size = 16
 

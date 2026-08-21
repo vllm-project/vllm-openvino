@@ -172,6 +172,18 @@ class OpenVINOWorkerV1(WorkerBase):
         self,
         scheduler_output: SchedulerOutput,
     ) -> ModelRunnerOutput:
+        # Apply the scheduler's prefix-caching instructions to the physical
+        # KV cache before the model executes. These are only emitted when
+        # prefix caching is enabled.
+        if scheduler_output.kv_cache_block_copies:
+            self.cache_engine.copy([(block_copy.src_block_id,
+                                     block_copy.dst_block_id)
+                                    for block_copy in
+                                    scheduler_output.kv_cache_block_copies])
+        if scheduler_output.new_block_ids_to_zero:
+            self.cache_engine.zero_blocks(
+                scheduler_output.new_block_ids_to_zero)
+
         if scheduler_output.total_num_scheduled_tokens == 0:
             return ModelRunnerOutput(
                 req_ids=[],

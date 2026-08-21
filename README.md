@@ -88,10 +88,7 @@ The OpenVINO backend uses the vLLM V1 engine and supports:
 
 - Offline and OpenAI-compatible text generation.
 - Chunked prefill (`--enable-chunked-prefill`)
-
-> [!NOTE]
-> Prefix caching is temporarily disabled while its cache-copy path is updated
-> for the current vLLM V1 scheduler.
+- Prefix caching
 
 ## Performance tips
 
@@ -190,6 +187,6 @@ vllm bench throughput \
 ## Limitations
 
 - LoRA serving is not supported.
-- Prefix caching and asynchronous scheduling are not supported.
+- Asynchronous scheduling is not supported.
 - Multimodal and encoder-decoder models are not supported.
 - Tensor and pipeline parallelism are not supported.
