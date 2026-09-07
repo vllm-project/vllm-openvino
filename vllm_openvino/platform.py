@@ -159,6 +159,13 @@ class OpenVinoPlatform(Platform):
 
     @classmethod
     def import_kernels(cls) -> None:
+        # import_kernels() runs at vLLM startup (_custom_ops.py) to load the native
+        # vllm._C* kernels. Because OpenVINO is built with VLLM_TARGET_DEVICE=empty,
+        # those modules don't exist, so the override makes loading best-effort: it
+        # picks the ISA-correct module and silently tolerates their absence. It also
+        # filters the benign "dynamic module does not define module export function"
+        # error and best-effort loads the MoE kernels, so startup never crashes or
+        # spams warnings.
         ignored_msg = "dynamic module does not define module export function"
         if torch.cpu._is_avx512_supported():
             module_name = ("vllm._C" if torch.cpu._is_avx512_bf16_supported()
