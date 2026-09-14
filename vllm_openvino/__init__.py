@@ -1,10 +1,18 @@
+import os
 from logging.config import dictConfig
 
+import vllm.envs as vllm_envs
 from vllm.logger import DEFAULT_LOGGING_CONFIG
+
+from vllm_openvino.envs import environment_variables
 
 
 def register():
     """Register OpenVINO."""
+    # Register plugin-owned variables before vLLM validates the environment.
+    vllm_envs.environment_variables.update(environment_variables)
+    # OpenVINO provides its own V1 model runner.
+    os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
     return "vllm_openvino.platform.OpenVinoPlatform"
 
 

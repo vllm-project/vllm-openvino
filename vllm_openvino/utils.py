@@ -33,8 +33,8 @@ def determine_num_available_blocks(current_platform,  cache_config, cache_block_
                     "processed tokens.") from err
 
         num_device_blocks = int(kv_cache_size // cache_block_size)
-        num_swap_blocks = int(cache_config.swap_space_bytes //
-                              cache_block_size)
+        # vLLM V1 no longer exposes scheduler-managed swap space.
+        num_swap_blocks = 0
 
     return num_device_blocks, num_swap_blocks
 
